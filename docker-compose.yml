@@ -1,5 +1,9 @@
 version: '3.8'
 
+# RUST_LOG levels: error, warn, info, debug, trace
+# Module-specific: p2p_pbft::rpc=debug, p2p_pbft::mempool=debug
+# To change, modify RUST_LOG environment variable for each node
+
 services:
   # Node 0 - Primary validator
   node0:

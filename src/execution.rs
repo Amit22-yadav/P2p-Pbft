@@ -1,9 +1,10 @@
 use crate::account::{AccountError, AccountManager};
 use crate::message::Hash;
 use crate::storage::SharedStorage;
-use crate::types::{Account, Address, Block, Transaction, TransactionPayload, TransactionReceipt};
+use crate::types::{address_to_hex, hash_to_hex, Account, Address, Block, Transaction, TransactionPayload, TransactionReceipt};
 use std::sync::Arc;
 use thiserror::Error;
+use tracing::{debug, info, trace, warn};
 
 #[derive(Error, Debug, Clone)]
 pub enum ExecutionError {
@@ -172,8 +173,20 @@ impl ExecutionEngine {
         tx: &Transaction,
         account_manager: &AccountManager,
     ) -> TxExecutionResult {
+        trace!(
+            tx_hash = %hash_to_hex(&tx.hash),
+            from = %address_to_hex(&tx.from),
+            nonce = tx.nonce,
+            "Executing transaction"
+        );
+
         // First validate
         if let Err(e) = self.validate_transaction(tx, account_manager) {
+            debug!(
+                tx_hash = %hash_to_hex(&tx.hash),
+                error = %e,
+                "Transaction validation failed during execution"
+            );
             return TxExecutionResult {
                 success: false,
                 error: Some(e),
@@ -182,7 +195,7 @@ impl ExecutionEngine {
         }
 
         // Execute based on payload type
-        match &tx.payload {
+        let result = match &tx.payload {
             TransactionPayload::Transfer { to, value } => {
                 self.execute_transfer(tx, to, *value, account_manager)
             }
@@ -192,7 +205,23 @@ impl ExecutionEngine {
             TransactionPayload::DeleteState { key } => {
                 self.execute_delete_state(tx, key, account_manager)
             }
+        };
+
+        if result.success {
+            trace!(
+                tx_hash = %hash_to_hex(&tx.hash),
+                modified_accounts = result.modified_accounts.len(),
+                "Transaction executed successfully"
+            );
+        } else {
+            debug!(
+                tx_hash = %hash_to_hex(&tx.hash),
+                error = ?result.error,
+                "Transaction execution failed"
+            );
         }
+
+        result
     }
 
     /// Execute a transfer transaction
@@ -286,11 +315,33 @@ impl ExecutionEngine {
         block: &Block,
         account_manager: &AccountManager,
     ) -> Result<BlockExecutionResult, ExecutionError> {
+        info!(
+            height = block.height(),
+            tx_count = block.transactions.len(),
+            block_hash = %hash_to_hex(&block.hash()),
+            "Executing block"
+        );
+
         let mut receipts = Vec::with_capacity(block.transactions.len());
         let mut all_modified = Vec::new();
+        let mut success_count = 0;
+        let mut failed_count = 0;
 
         for (tx_index, tx) in block.transactions.iter().enumerate() {
             let result = self.execute_transaction(tx, account_manager);
+
+            if result.success {
+                success_count += 1;
+            } else {
+                failed_count += 1;
+                warn!(
+                    height = block.height(),
+                    tx_index = tx_index,
+                    tx_hash = %hash_to_hex(&tx.hash),
+                    error = ?result.error,
+                    "Transaction failed in block"
+                );
+            }
 
             // Create receipt
             let receipt = TransactionReceipt {
@@ -310,6 +361,14 @@ impl ExecutionEngine {
         let state_root = account_manager
             .compute_state_root()
             .map_err(|e| ExecutionError::Account(e.to_string()))?;
+
+        info!(
+            height = block.height(),
+            successful = success_count,
+            failed = failed_count,
+            state_root = %hash_to_hex(&state_root),
+            "Block execution complete"
+        );
 
         Ok(BlockExecutionResult {
             state_root,

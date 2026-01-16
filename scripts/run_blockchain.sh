@@ -15,6 +15,7 @@ BASE_RPC_PORT=${BASE_RPC_PORT:-8545}
 DATA_DIR=${DATA_DIR:-"./data"}
 CHAIN_ID=${CHAIN_ID:-"pbft-chain"}
 INITIAL_BALANCE=${INITIAL_BALANCE:-1000000}
+RUST_LOG=${RUST_LOG:-"info"}
 
 # Colors for output
 RED='\033[0;31m'
@@ -74,7 +75,7 @@ start_node() {
     mkdir -p "$(dirname "$log_file")"
     mkdir -p "$node_data_dir"
 
-    $BINARY blockchain \
+    RUST_LOG="$RUST_LOG" $BINARY blockchain \
         --port $p2p_port \
         --rpc-port $rpc_port \
         --data-dir "$node_data_dir" \
@@ -102,6 +103,7 @@ case "${1:-start}" in
         echo "  P2P Ports:       $BASE_P2P_PORT - $((BASE_P2P_PORT + NUM_NODES - 1))"
         echo "  RPC Ports:       $BASE_RPC_PORT - $((BASE_RPC_PORT + NUM_NODES - 1))"
         echo "  Initial Balance: $INITIAL_BALANCE"
+        echo "  Log Level:       $RUST_LOG"
         echo ""
 
         # Create logs directory
@@ -195,7 +197,7 @@ case "${1:-start}" in
         node_data_dir="${DATA_DIR}/dev"
         mkdir -p "$node_data_dir"
 
-        $BINARY blockchain \
+        RUST_LOG="$RUST_LOG" $BINARY blockchain \
             --port $BASE_P2P_PORT \
             --rpc-port $BASE_RPC_PORT \
             --data-dir "$node_data_dir" \
@@ -227,10 +229,13 @@ case "${1:-start}" in
         echo "  DATA_DIR        - Data directory (default: ./data)"
         echo "  CHAIN_ID        - Chain identifier (default: pbft-chain)"
         echo "  INITIAL_BALANCE - Initial balance per validator (default: 1000000)"
+        echo "  RUST_LOG        - Log level/filter (default: info)"
+        echo "                    Examples: debug, warn, p2p_pbft::rpc=debug"
         echo ""
         echo "Examples:"
         echo "  $0 start                    # Start 4-node network"
         echo "  NUM_NODES=7 $0 start        # Start 7-node network"
+        echo "  RUST_LOG=debug $0 start     # Start with debug logging"
         echo "  $0 single                   # Start single dev node"
         echo "  $0 status                   # Check all nodes"
         echo "  $0 logs 1                   # View node 1 logs"

@@ -8,7 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use warp::Filter;
 
 /// Type alias for peer count provider
@@ -187,7 +187,7 @@ async fn handle_rpc_request(
     blockchain: Arc<RwLock<Blockchain>>,
     peers: Option<PeerCountFn>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
-    debug!("RPC request: method={}", request.method);
+    debug!(method = %request.method, id = %request.id, "RPC request received");
 
     let response = match request.method.as_str() {
         // Ethereum-compatible methods
@@ -219,7 +219,10 @@ async fn handle_rpc_request(
     };
 
     let json_response = match response {
-        Ok(result) => JsonRpcResponse::success(request.id, result),
+        Ok(result) => {
+            debug!(method = %request.method, "RPC request successful");
+            JsonRpcResponse::success(request.id, result)
+        }
         Err(e) => {
             let (code, message) = match e {
                 RpcError::InvalidParams(msg) => (-32602, msg),
@@ -227,6 +230,7 @@ async fn handle_rpc_request(
                 RpcError::MethodNotFound(msg) => (-32601, format!("Method not found: {}", msg)),
                 RpcError::ParseError => (-32700, "Parse error".to_string()),
             };
+            warn!(method = %request.method, code = code, error = %message, "RPC request failed");
             JsonRpcResponse::error(request.id, code, message)
         }
     };
@@ -483,16 +487,35 @@ async fn handle_submit_transaction(
 
     // Create transaction (use provided timestamp if available for proper signature verification)
     let mut tx = if let Some(timestamp) = tx_params.timestamp {
-        Transaction::new_with_timestamp(from, tx_params.nonce, payload, timestamp)
+        Transaction::new_with_timestamp(from, tx_params.nonce, payload.clone(), timestamp)
     } else {
-        Transaction::new(from, tx_params.nonce, payload)
+        Transaction::new(from, tx_params.nonce, payload.clone())
     };
     tx.signature = signature;
 
+    let tx_hash = tx.hash;
+    info!(
+        from = %address_to_hex(&from),
+        nonce = tx_params.nonce,
+        tx_hash = %hash_to_hex(&tx_hash),
+        payload = ?match &payload {
+            TransactionPayload::Transfer { to, value } => format!("transfer {} to {}", value, address_to_hex(to)),
+            TransactionPayload::SetState { .. } => "set_state".to_string(),
+            TransactionPayload::DeleteState { .. } => "delete_state".to_string(),
+        },
+        "Transaction submitted via RPC"
+    );
+
     let bc = blockchain.read().await;
     match bc.submit_transaction(tx).await {
-        Ok(hash) => Ok(serde_json::json!({ "hash": hash_to_hex(&hash) })),
-        Err(e) => Err(RpcError::Internal(e.to_string())),
+        Ok(hash) => {
+            info!(tx_hash = %hash_to_hex(&hash), "Transaction accepted into mempool");
+            Ok(serde_json::json!({ "hash": hash_to_hex(&hash) }))
+        }
+        Err(e) => {
+            warn!(tx_hash = %hash_to_hex(&tx_hash), error = %e, "Transaction rejected");
+            Err(RpcError::Internal(e.to_string()))
+        }
     }
 }
 

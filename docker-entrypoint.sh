@@ -11,6 +11,9 @@ RPC_PORT=${RPC_PORT:-8545}
 DATA_DIR=${DATA_DIR:-/app/data}
 CHAIN_ID=${CHAIN_ID:-pbft-chain}
 INITIAL_BALANCE=${INITIAL_BALANCE:-1000000}
+RUST_LOG=${RUST_LOG:-info}
+
+export RUST_LOG
 
 case "$1" in
     blockchain|node)
@@ -21,6 +24,7 @@ case "$1" in
         echo "  Data Dir: $DATA_DIR"
         echo "  Chain ID: $CHAIN_ID"
         echo "  Total Nodes: $NUM_NODES"
+        echo "  Log Level: $RUST_LOG"
 
         # Build bootstrap arguments from environment
         BOOTSTRAP_ARGS=""

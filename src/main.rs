@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, RwLock};
-use tracing::{info, warn, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing::{info, warn};
+use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Parser)]
 #[command(name = "p2p-pbft")]
@@ -116,11 +116,17 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize logging
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .with_target(false)
+    // Initialize logging with RUST_LOG env support
+    // Default to "info" if RUST_LOG is not set
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let subscriber = fmt::Subscriber::builder()
+        .with_env_filter(env_filter)
+        .with_target(true)
         .with_thread_ids(false)
+        .with_file(false)
+        .with_line_number(false)
         .compact()
         .finish();
     tracing::subscriber::set_global_default(subscriber)?;

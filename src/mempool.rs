@@ -1,11 +1,12 @@
 use crate::account::AccountManager;
 use crate::execution::ExecutionEngine;
 use crate::message::Hash;
-use crate::types::{Address, Transaction};
+use crate::types::{address_to_hex, hash_to_hex, Address, Transaction};
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use thiserror::Error;
+use tracing::{debug, trace, warn};
 
 #[derive(Error, Debug)]
 pub enum MempoolError {
@@ -77,23 +78,36 @@ impl Mempool {
         {
             let transactions = self.transactions.read();
             if transactions.contains_key(&tx_hash) {
+                debug!(tx_hash = %hash_to_hex(&tx_hash), "Duplicate transaction rejected");
                 return Err(MempoolError::DuplicateTransaction);
             }
         }
 
         // Check pool size
-        {
+        let pool_size = {
             let transactions = self.transactions.read();
             if transactions.len() >= self.config.max_size {
+                warn!(
+                    pool_size = transactions.len(),
+                    max_size = self.config.max_size,
+                    "Mempool full, rejecting transaction"
+                );
                 return Err(MempoolError::MempoolFull);
             }
-        }
+            transactions.len()
+        };
 
         // Check per-sender limit
         {
             let by_sender = self.by_sender.read();
             if let Some(sender_txs) = by_sender.get(&tx.from) {
                 if sender_txs.len() >= self.config.max_per_sender {
+                    warn!(
+                        from = %address_to_hex(&tx.from),
+                        sender_tx_count = sender_txs.len(),
+                        max_per_sender = self.config.max_per_sender,
+                        "Too many pending transactions from sender"
+                    );
                     return Err(MempoolError::TooManyFromSender);
                 }
             }
@@ -121,6 +135,14 @@ impl Mempool {
             }
         }
 
+        debug!(
+            tx_hash = %hash_to_hex(&tx_hash),
+            from = %address_to_hex(&tx.from),
+            nonce = tx.nonce,
+            pool_size = pool_size + 1,
+            "Transaction added to mempool"
+        );
+
         Ok(())
     }
 
@@ -133,6 +155,12 @@ impl Mempool {
     ) -> Result<(), MempoolError> {
         // Validate transaction
         if let Err(e) = execution_engine.validate_transaction(&tx, account_manager) {
+            debug!(
+                tx_hash = %hash_to_hex(&tx.hash),
+                from = %address_to_hex(&tx.from),
+                error = %e,
+                "Transaction validation failed"
+            );
             return Err(MempoolError::ValidationFailed(e.to_string()));
         }
 
@@ -168,9 +196,11 @@ impl Mempool {
         let mut by_sender = self.by_sender.write();
 
         let hash_set: HashSet<_> = tx_hashes.iter().collect();
+        let mut removed_count = 0;
 
         for hash in tx_hashes {
             if let Some(tx) = transactions.remove(hash) {
+                removed_count += 1;
                 if let Some(sender_txs) = by_sender.get_mut(&tx.from) {
                     sender_txs.remove(hash);
                     if sender_txs.is_empty() {
@@ -181,6 +211,14 @@ impl Mempool {
         }
 
         queue.retain(|h| !hash_set.contains(h));
+
+        if removed_count > 0 {
+            debug!(
+                removed = removed_count,
+                remaining = transactions.len(),
+                "Committed transactions removed from mempool"
+            );
+        }
     }
 
     /// Get transactions for block proposal (ordered by arrival)
@@ -226,6 +264,12 @@ impl Mempool {
                     expected_nonce += 1;
                 } else if tx.nonce > expected_nonce {
                     // Gap in nonces - stop selecting from this sender
+                    trace!(
+                        from = %address_to_hex(sender),
+                        expected_nonce = expected_nonce,
+                        tx_nonce = tx.nonce,
+                        "Nonce gap detected, stopping selection for sender"
+                    );
                     break;
                 }
                 // Skip if nonce < expected (already processed)
@@ -237,7 +281,16 @@ impl Mempool {
         let queue_order: HashMap<_, _> = queue.iter().enumerate().map(|(i, h)| (*h, i)).collect();
         result.sort_by_key(|tx| queue_order.get(&tx.hash).copied().unwrap_or(usize::MAX));
 
-        result.into_iter().take(max_count).collect()
+        let final_result: Vec<_> = result.into_iter().take(max_count).collect();
+
+        trace!(
+            selected = final_result.len(),
+            total_pending = transactions.len(),
+            max_count = max_count,
+            "Selected transactions for block proposal"
+        );
+
+        final_result
     }
 
     /// Check if transaction exists in mempool

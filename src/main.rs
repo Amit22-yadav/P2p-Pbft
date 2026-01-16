@@ -212,6 +212,7 @@ async fn start_node(
 
     // Spawn view change timeout checker
     let consensus_state = consensus.state().clone();
+    let network_peers_for_status = network.peers.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(5));
         loop {
@@ -220,11 +221,20 @@ async fn start_node(
             let is_primary = state.is_primary();
             let view = state.view;
             let seq = state.sequence;
-            let peers = state.replicas.len();
+            let total_replicas = state.replicas.len();
             drop(state);
+
+            let connected_peers = network_peers_for_status.read().len();
+            let expected_peers = total_replicas.saturating_sub(1); // exclude self
+            let connection_status = if connected_peers >= expected_peers {
+                "✓ fully connected"
+            } else {
+                "⚠ partial"
+            };
+
             info!(
-                "Status: view={}, seq={}, primary={}, replicas={}",
-                view, seq, is_primary, peers
+                "Status: view={}, seq={}, primary={}, peers={}/{} ({})",
+                view, seq, is_primary, connected_peers, expected_peers, connection_status
             );
         }
     });
@@ -281,14 +291,19 @@ async fn start_node(
                 }
                 "status" | "st" => {
                     let state = consensus_for_cli.read();
-                    println!("Node ID: {}...", &state.node_id[..16]);
-                    println!("View: {}", state.view);
-                    println!("Sequence: {}", state.sequence);
-                    println!("Is Primary: {}", state.is_primary());
-                    println!("Primary: {}...", &state.primary()[..16]);
-                    println!("Replicas: {}", state.replicas.len());
-                    println!("Log entries: {}", state.log.len());
-                    println!("Executed: {}", state.executed.len());
+                    println!("═══════════════════════════════════════");
+                    println!("  Node Status");
+                    println!("═══════════════════════════════════════");
+                    println!("  Node ID:     {}...", &state.node_id[..16]);
+                    println!("  View:        {}", state.view);
+                    println!("  Sequence:    {}", state.sequence);
+                    println!("  Role:        {}", if state.is_primary() { "PRIMARY" } else { "BACKUP" });
+                    println!("  Primary:     {}...", &state.primary()[..16]);
+                    println!("───────────────────────────────────────");
+                    println!("  Replicas:    {}", state.replicas.len());
+                    println!("  Log entries: {}", state.log.len());
+                    println!("  Executed:    {}", state.executed.len());
+                    println!("═══════════════════════════════════════");
                 }
                 "peers" | "p" => {
                     let state = consensus_for_cli.read();

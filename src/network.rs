@@ -159,8 +159,6 @@ impl Network {
             }
         };
 
-        info!("Connected to peer {} at {}", peer_id, address);
-
         // Create peer handle
         let (tx, rx) = mpsc::channel(100);
         let peer_handle = PeerHandle {
@@ -174,6 +172,10 @@ impl Network {
 
         // Store peer
         self.peers.write().insert(peer_id.clone(), peer_handle);
+
+        // Log connection with peer count
+        let peer_count = self.peers.read().len();
+        info!("✓ Peer connected: {}... at {} [Total peers: {}]", &peer_id[..16], address, peer_count);
 
         // Spawn reader and writer tasks
         let message_tx = self.message_tx.clone();
@@ -190,8 +192,9 @@ impl Network {
             if let Err(e) = peer_reader(read_half, peer_id_clone.clone(), message_tx).await {
                 debug!("Peer {} reader ended: {}", peer_id_clone, e);
             }
+            let remaining = peers.read().len().saturating_sub(1);
             peers.write().remove(&peer_id_clone);
-            info!("Peer {} disconnected", peer_id_clone);
+            info!("✗ Peer disconnected: {}... [Remaining peers: {}]", &peer_id_clone[..16], remaining);
         });
 
         // Try to connect to discovered peers to form a mesh network
@@ -382,8 +385,6 @@ async fn handle_incoming_connection(
     };
     send_message(&mut write_half, &ack).await?;
 
-    info!("Handshake completed with peer {}", peer_id);
-
     // Create peer handle
     let (tx, rx) = mpsc::channel(100);
     let peer_address = address
@@ -395,7 +396,7 @@ async fn handle_incoming_connection(
     let peer_handle = PeerHandle {
         info: PeerInfo {
             node_id: peer_id.clone(),
-            address: peer_address,
+            address: peer_address.clone(),
             connected: true,
         },
         sender: tx,
@@ -403,6 +404,10 @@ async fn handle_incoming_connection(
 
     // Store peer
     peers.write().insert(peer_id.clone(), peer_handle);
+
+    // Log connection with peer count
+    let peer_count = peers.read().len();
+    info!("✓ Peer connected: {}... at {} [Total peers: {}]", &peer_id[..16], peer_address, peer_count);
 
     // Spawn writer task
     tokio::spawn(async move {
@@ -414,8 +419,9 @@ async fn handle_incoming_connection(
     if let Err(e) = peer_reader(read_half, peer_id.clone(), message_tx).await {
         debug!("Peer {} reader ended: {}", peer_id, e);
     }
+    let remaining = peers.read().len().saturating_sub(1);
     peers.write().remove(&peer_id_clone);
-    info!("Peer {} disconnected", peer_id_clone);
+    info!("✗ Peer disconnected: {}... [Remaining peers: {}]", &peer_id_clone[..16], remaining);
 
     Ok(())
 }

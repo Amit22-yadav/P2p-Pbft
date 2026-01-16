@@ -138,7 +138,7 @@ impl Node {
             let mut interval = tokio::time::interval(Duration::from_secs(1));
             loop {
                 interval.tick().await;
-                let state = consensus_for_timeout.read();
+                let state = consensus_for_timeout.read().await;
                 if !state.is_primary()
                     && state.last_primary_activity.elapsed() > state.config.view_change_timeout
                 {

@@ -20,6 +20,16 @@ thiserror = "1.0"
 hex = "0.4"
 parking_lot = "0.12"
 
+# Blockchain additions
+rocksdb = "0.22"
+warp = "0.3"
+tempfile = "3.10"
+reqwest = { version = "0.11", features = ["blocking", "json"] }
+
 [[bin]]
 name = "p2p-pbft"
 path = "src/main.rs"
+
+[[bin]]
+name = "wallet"
+path = "src/bin/wallet.rs"

@@ -1,3 +1,4 @@
+use crate::types::{Block, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -111,6 +112,47 @@ pub struct Checkpoint {
     pub signature: Vec<u8>,
 }
 
+// ==================== Block-Based Consensus Messages ====================
+
+/// Block pre-prepare message from primary (for block-based consensus)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockPrePrepare {
+    pub view: ViewNumber,
+    pub sequence: SequenceNumber,
+    pub block_hash: Hash,
+    pub block: Block,
+    pub primary_id: NodeId,
+    pub signature: Vec<u8>,
+}
+
+/// Block prepare message from replicas
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockPrepare {
+    pub view: ViewNumber,
+    pub sequence: SequenceNumber,
+    pub block_hash: Hash,
+    pub replica_id: NodeId,
+    pub signature: Vec<u8>,
+}
+
+/// Block commit message from replicas
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockCommit {
+    pub view: ViewNumber,
+    pub sequence: SequenceNumber,
+    pub block_hash: Hash,
+    pub replica_id: NodeId,
+    pub signature: Vec<u8>,
+}
+
+/// Block committed notification (sent after 2f+1 commits)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BlockCommitted {
+    pub block_hash: Hash,
+    pub height: u64,
+    pub signatures: Vec<(NodeId, Vec<u8>)>,
+}
+
 /// Network messages for P2P communication
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum NetworkMessage {
@@ -141,6 +183,7 @@ pub enum NetworkMessage {
 /// PBFT consensus messages
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ConsensusMessage {
+    // Legacy request-based messages (kept for compatibility)
     Request(Request),
     PrePrepare(PrePrepare),
     Prepare(Prepare),
@@ -149,6 +192,15 @@ pub enum ConsensusMessage {
     ViewChange(ViewChange),
     NewView(NewView),
     Checkpoint(Checkpoint),
+
+    // Block-based consensus messages
+    BlockPrePrepare(BlockPrePrepare),
+    BlockPrepare(BlockPrepare),
+    BlockCommit(BlockCommit),
+    BlockCommitted(BlockCommitted),
+
+    // Transaction propagation
+    TransactionBroadcast(Transaction),
 }
 
 impl NetworkMessage {

@@ -72,7 +72,7 @@ async fn test_pbft_consensus_basic() {
 
     // Find which node is the primary (view 0)
     let primary_idx = {
-        let state = consensus_nodes[0].state().read();
+        let state = consensus_nodes[0].state().read().await;
         let primary_id = state.primary().clone();
         replica_ids.iter().position(|id| id == &primary_id).unwrap()
     };
@@ -215,17 +215,19 @@ async fn test_request_forwarding_to_primary() {
 
     // Find primary and a non-primary node
     let primary_id = {
-        let state = consensus_nodes[0].state().read();
+        let state = consensus_nodes[0].state().read().await;
         state.primary().clone()
     };
 
-    let non_primary_idx = consensus_nodes
-        .iter()
-        .position(|node| {
-            let state = node.state().read();
-            state.node_id != primary_id
-        })
-        .unwrap();
+    // Find a non-primary node
+    let mut non_primary_idx = 0;
+    for (i, node) in consensus_nodes.iter().enumerate() {
+        let state = node.state().read().await;
+        if state.node_id != primary_id {
+            non_primary_idx = i;
+            break;
+        }
+    }
 
     println!("Testing request forwarding from non-primary node {}", non_primary_idx);
 

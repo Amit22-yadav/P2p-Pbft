@@ -1,9 +1,11 @@
 use crate::crypto::{verify_signature, KeyPair};
 use crate::message::{
-    Checkpoint, Commit, ConsensusMessage, Hash, NetworkMessage, NewView, NodeId, PrePrepare,
-    Prepare, Request, SequenceNumber, ViewChange, ViewNumber,
+    BlockCommit, BlockPrePrepare, BlockPrepare, Checkpoint, Commit, ConsensusMessage, Hash,
+    NetworkMessage, NewView, NodeId, PrePrepare, Prepare, Request, SequenceNumber, ViewChange,
+    ViewNumber,
 };
-use parking_lot::RwLock;
+use crate::types::Block;
+use tokio::sync::RwLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
@@ -88,6 +90,38 @@ impl ConsensusInstance {
     }
 }
 
+// ==================== Block-Based Consensus State ====================
+
+/// State for a block consensus instance
+#[derive(Debug, Clone)]
+pub struct BlockConsensusInstance {
+    pub sequence: SequenceNumber,
+    pub view: ViewNumber,
+    pub block: Option<Block>,
+    pub block_hash: Option<Hash>,
+    pub phase: Phase,
+    pub pre_prepare: Option<BlockPrePrepare>,
+    pub prepares: HashMap<NodeId, BlockPrepare>,
+    pub commits: HashMap<NodeId, BlockCommit>,
+    pub started_at: Instant,
+}
+
+impl BlockConsensusInstance {
+    pub fn new(sequence: SequenceNumber, view: ViewNumber) -> Self {
+        Self {
+            sequence,
+            view,
+            block: None,
+            block_hash: None,
+            phase: Phase::Idle,
+            pre_prepare: None,
+            prepares: HashMap::new(),
+            commits: HashMap::new(),
+            started_at: Instant::now(),
+        }
+    }
+}
+
 /// Configuration for PBFT
 #[derive(Debug, Clone)]
 pub struct PbftConfig {
@@ -136,10 +170,14 @@ pub struct PbftState {
     pub config: PbftConfig,
     /// List of all replica IDs in order
     pub replicas: Vec<NodeId>,
-    /// Consensus instances
+    /// Consensus instances (legacy request-based)
     pub log: HashMap<SequenceNumber, ConsensusInstance>,
+    /// Block consensus instances
+    pub block_log: HashMap<SequenceNumber, BlockConsensusInstance>,
     /// Executed requests
     pub executed: HashSet<Hash>,
+    /// Committed blocks
+    pub committed_blocks: HashSet<Hash>,
     /// Checkpoints
     pub checkpoints: HashMap<SequenceNumber, HashMap<NodeId, Checkpoint>>,
     /// Stable checkpoint
@@ -164,7 +202,9 @@ impl PbftState {
             config,
             replicas,
             log: HashMap::new(),
+            block_log: HashMap::new(),
             executed: HashSet::new(),
+            committed_blocks: HashSet::new(),
             checkpoints: HashMap::new(),
             stable_checkpoint: 0,
             view_changes: HashMap::new(),
@@ -192,6 +232,17 @@ impl PbftState {
             .or_insert_with(|| ConsensusInstance::new(sequence, view))
     }
 
+    /// Get or create a block consensus instance
+    pub fn get_or_create_block_instance(
+        &mut self,
+        sequence: SequenceNumber,
+    ) -> &mut BlockConsensusInstance {
+        let view = self.view;
+        self.block_log
+            .entry(sequence)
+            .or_insert_with(|| BlockConsensusInstance::new(sequence, view))
+    }
+
     /// Sign data
     pub fn sign(&self, data: &[u8]) -> Vec<u8> {
         self.keypair.sign(data)
@@ -203,6 +254,8 @@ pub struct PbftConsensus {
     state: Arc<RwLock<PbftState>>,
     outgoing_tx: mpsc::Sender<OutgoingMessage>,
     committed_tx: mpsc::Sender<Request>,
+    /// Channel for committed blocks (block-based consensus)
+    block_committed_tx: Option<mpsc::Sender<Block>>,
 }
 
 impl PbftConsensus {
@@ -215,7 +268,28 @@ impl PbftConsensus {
             state: Arc::new(RwLock::new(state)),
             outgoing_tx,
             committed_tx,
+            block_committed_tx: None,
         }
+    }
+
+    /// Create with block commit channel
+    pub fn with_block_channel(
+        state: PbftState,
+        outgoing_tx: mpsc::Sender<OutgoingMessage>,
+        committed_tx: mpsc::Sender<Request>,
+        block_committed_tx: mpsc::Sender<Block>,
+    ) -> Self {
+        Self {
+            state: Arc::new(RwLock::new(state)),
+            outgoing_tx,
+            committed_tx,
+            block_committed_tx: Some(block_committed_tx),
+        }
+    }
+
+    /// Set the block committed channel
+    pub fn set_block_channel(&mut self, tx: mpsc::Sender<Block>) {
+        self.block_committed_tx = Some(tx);
     }
 
     /// Get the state for reading
@@ -225,7 +299,7 @@ impl PbftConsensus {
 
     /// Handle a new client request (as primary)
     pub async fn handle_request(&self, request: Request) -> Result<(), PbftError> {
-        let mut state = self.state.write();
+        let mut state = self.state.write().await;
 
         if !state.is_primary() {
             // Forward to primary only (not broadcast)
@@ -313,7 +387,7 @@ impl PbftConsensus {
     /// Handle a pre-prepare message (as backup)
     pub async fn handle_pre_prepare(&self, pre_prepare: PrePrepare) -> Result<(), PbftError> {
         let prepare = {
-            let mut state = self.state.write();
+            let mut state = self.state.write().await;
 
             // Validate view
             if pre_prepare.view != state.view {
@@ -410,7 +484,7 @@ impl PbftConsensus {
     /// Handle a prepare message
     pub async fn handle_prepare(&self, prepare: Prepare) -> Result<(), PbftError> {
         let sequence = {
-            let mut state = self.state.write();
+            let mut state = self.state.write().await;
 
             // Validate view
             if prepare.view != state.view {
@@ -471,7 +545,7 @@ impl PbftConsensus {
     /// Try to advance to prepared state
     async fn try_advance_to_prepared(&self, sequence: SequenceNumber) -> Result<(), PbftError> {
         let commit = {
-            let mut state = self.state.write();
+            let mut state = self.state.write().await;
             let quorum = state.config.quorum();
             let node_id = state.node_id.clone();
 
@@ -531,7 +605,7 @@ impl PbftConsensus {
     /// Handle a commit message
     pub async fn handle_commit(&self, commit: Commit) -> Result<(), PbftError> {
         let sequence = {
-            let mut state = self.state.write();
+            let mut state = self.state.write().await;
 
             // Validate view
             if commit.view != state.view {
@@ -596,7 +670,7 @@ impl PbftConsensus {
     /// Try to advance to committed state
     async fn try_advance_to_committed(&self, sequence: SequenceNumber) -> Result<(), PbftError> {
         let request_to_commit = {
-            let mut state = self.state.write();
+            let mut state = self.state.write().await;
             let quorum = state.config.quorum();
 
             let instance = match state.log.get(&sequence) {
@@ -661,7 +735,7 @@ impl PbftConsensus {
     /// Try to create a checkpoint
     async fn try_checkpoint(&self, sequence: SequenceNumber) -> Result<(), PbftError> {
         let checkpoint = {
-            let state = self.state.read();
+            let state = self.state.read().await;
             let interval = state.config.checkpoint_interval;
 
             if sequence % interval != 0 {
@@ -689,7 +763,7 @@ impl PbftConsensus {
 
     /// Handle a checkpoint message
     pub async fn handle_checkpoint(&self, checkpoint: Checkpoint) -> Result<(), PbftError> {
-        let mut state = self.state.write();
+        let mut state = self.state.write().await;
 
         let checkpoint_seq = checkpoint.sequence;
         let checkpoint_replica = checkpoint.replica_id.clone();
@@ -723,7 +797,7 @@ impl PbftConsensus {
     /// Handle view change message
     pub async fn handle_view_change(&self, view_change: ViewChange) -> Result<(), PbftError> {
         let new_view_msg = {
-            let mut state = self.state.write();
+            let mut state = self.state.write().await;
 
             if view_change.new_view <= state.view {
                 return Ok(());
@@ -789,7 +863,7 @@ impl PbftConsensus {
 
     /// Handle new view message
     pub async fn handle_new_view(&self, new_view: NewView) -> Result<(), PbftError> {
-        let mut state = self.state.write();
+        let mut state = self.state.write().await;
 
         if new_view.new_view <= state.view {
             return Ok(());
@@ -812,7 +886,7 @@ impl PbftConsensus {
     /// Start a view change
     pub async fn start_view_change(&self) {
         let view_change = {
-            let mut state = self.state.write();
+            let mut state = self.state.write().await;
 
             if state.view_changing {
                 return;
@@ -850,7 +924,7 @@ impl PbftConsensus {
 
     /// Check view change timeout
     pub async fn check_timeout(&self) {
-        let state = self.state.read();
+        let state = self.state.read().await;
 
         if state.view_changing {
             return;
@@ -875,6 +949,480 @@ impl PbftConsensus {
             ConsensusMessage::ViewChange(vc) => self.handle_view_change(vc).await,
             ConsensusMessage::NewView(nv) => self.handle_new_view(nv).await,
             ConsensusMessage::Checkpoint(cp) => self.handle_checkpoint(cp).await,
+            // Block-based consensus messages
+            ConsensusMessage::BlockPrePrepare(pp) => self.handle_block_pre_prepare(pp).await,
+            ConsensusMessage::BlockPrepare(p) => self.handle_block_prepare(p).await,
+            ConsensusMessage::BlockCommit(c) => self.handle_block_commit(c).await,
+            ConsensusMessage::BlockCommitted(_) => Ok(()), // Informational only
+            ConsensusMessage::TransactionBroadcast(_) => Ok(()), // Handled by blockchain layer
         }
+    }
+
+    // ==================== Block-Based Consensus Methods ====================
+
+    /// Handle a new block proposal (as primary)
+    pub async fn handle_block_proposal(&self, block: Block) -> Result<(), PbftError> {
+        let mut state = self.state.write().await;
+
+        if !state.is_primary() {
+            return Err(PbftError::NotPrimary);
+        }
+
+        let block_hash = block.hash();
+
+        // Check if already committed
+        if state.committed_blocks.contains(&block_hash) {
+            return Ok(());
+        }
+
+        // Assign sequence number
+        state.sequence += 1;
+        let sequence = state.sequence;
+        let view = state.view;
+
+        // Check water marks
+        if sequence > state.high_watermark {
+            warn!("Sequence {} exceeds high watermark", sequence);
+            state.sequence -= 1;
+            return Err(PbftError::InvalidSequence);
+        }
+
+        info!(
+            "Primary creating BlockPrePrepare for block {} sequence {} view {}",
+            hex::encode(&block_hash[..8]),
+            sequence,
+            view
+        );
+
+        // Create pre-prepare message
+        let sign_data = format!("block-{}-{}-{:?}", view, sequence, block_hash);
+        let signature = state.sign(sign_data.as_bytes());
+
+        let pre_prepare = BlockPrePrepare {
+            view,
+            sequence,
+            block_hash,
+            block: block.clone(),
+            primary_id: state.node_id.clone(),
+            signature,
+        };
+
+        // Create our own prepare message
+        let prepare_sign_data = format!("block-prepare-{}-{}-{:?}", view, sequence, block_hash);
+        let prepare_signature = state.sign(prepare_sign_data.as_bytes());
+        let prepare = BlockPrepare {
+            view,
+            sequence,
+            block_hash,
+            replica_id: state.node_id.clone(),
+            signature: prepare_signature,
+        };
+
+        // Update local state
+        let node_id = state.node_id.clone();
+        let instance = state.get_or_create_block_instance(sequence);
+        instance.block = Some(block);
+        instance.block_hash = Some(block_hash);
+        instance.pre_prepare = Some(pre_prepare.clone());
+        instance.phase = Phase::PrePrepared;
+        instance.prepares.insert(node_id, prepare.clone());
+
+        drop(state);
+
+        // Broadcast pre-prepare
+        let msg = NetworkMessage::Consensus(ConsensusMessage::BlockPrePrepare(pre_prepare));
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
+
+        // Also broadcast our prepare message
+        let prepare_msg = NetworkMessage::Consensus(ConsensusMessage::BlockPrepare(prepare));
+        let _ = self
+            .outgoing_tx
+            .send(OutgoingMessage::Broadcast(prepare_msg))
+            .await;
+
+        // Try to advance
+        self.try_advance_block_to_prepared(sequence).await?;
+
+        Ok(())
+    }
+
+    /// Handle a block pre-prepare message (as backup)
+    pub async fn handle_block_pre_prepare(
+        &self,
+        pre_prepare: BlockPrePrepare,
+    ) -> Result<(), PbftError> {
+        let prepare = {
+            let mut state = self.state.write().await;
+
+            // Validate view
+            if pre_prepare.view != state.view {
+                return Err(PbftError::InvalidView);
+            }
+
+            // Validate primary
+            if &pre_prepare.primary_id != state.primary() {
+                return Err(PbftError::NotPrimary);
+            }
+
+            // Validate sequence
+            if pre_prepare.sequence <= state.low_watermark
+                || pre_prepare.sequence > state.high_watermark
+            {
+                return Err(PbftError::InvalidSequence);
+            }
+
+            // Verify signature
+            let sign_data = format!(
+                "block-{}-{}-{:?}",
+                pre_prepare.view, pre_prepare.sequence, pre_prepare.block_hash
+            );
+            if !verify_node_signature(
+                &pre_prepare.primary_id,
+                sign_data.as_bytes(),
+                &pre_prepare.signature,
+            ) {
+                warn!(
+                    "Invalid signature on BlockPrePrepare from {}",
+                    pre_prepare.primary_id
+                );
+                return Err(PbftError::InvalidSignature);
+            }
+
+            // Check for conflicting pre-prepare
+            if let Some(instance) = state.block_log.get(&pre_prepare.sequence) {
+                if instance.pre_prepare.is_some() {
+                    if instance.block_hash != Some(pre_prepare.block_hash) {
+                        return Err(PbftError::InvalidMessage);
+                    }
+                    return Ok(()); // Already have this pre-prepare
+                }
+            }
+
+            // Verify block hash
+            let computed_hash = pre_prepare.block.hash();
+            if computed_hash != pre_prepare.block_hash {
+                return Err(PbftError::InvalidMessage);
+            }
+
+            info!(
+                "Received BlockPrePrepare for block {} sequence {} view {}",
+                hex::encode(&pre_prepare.block_hash[..8]),
+                pre_prepare.sequence,
+                pre_prepare.view
+            );
+
+            let sequence = pre_prepare.sequence;
+            let view = pre_prepare.view;
+            let block_hash = pre_prepare.block_hash;
+            let node_id = state.node_id.clone();
+
+            // Create prepare message
+            let sign_data = format!("block-prepare-{}-{}-{:?}", view, sequence, block_hash);
+            let signature = state.sign(sign_data.as_bytes());
+
+            let prepare = BlockPrepare {
+                view,
+                sequence,
+                block_hash,
+                replica_id: node_id.clone(),
+                signature,
+            };
+
+            // Update instance
+            let instance = state.get_or_create_block_instance(sequence);
+            instance.block = Some(pre_prepare.block.clone());
+            instance.block_hash = Some(block_hash);
+            instance.pre_prepare = Some(pre_prepare);
+            instance.phase = Phase::PrePrepared;
+            instance.prepares.insert(node_id, prepare.clone());
+
+            state.last_primary_activity = Instant::now();
+
+            prepare
+        };
+
+        let msg = NetworkMessage::Consensus(ConsensusMessage::BlockPrepare(prepare.clone()));
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
+
+        self.try_advance_block_to_prepared(prepare.sequence).await?;
+
+        Ok(())
+    }
+
+    /// Handle a block prepare message
+    pub async fn handle_block_prepare(&self, prepare: BlockPrepare) -> Result<(), PbftError> {
+        let sequence = {
+            let mut state = self.state.write().await;
+
+            // Validate view
+            if prepare.view != state.view {
+                return Err(PbftError::InvalidView);
+            }
+
+            // Validate sequence
+            if prepare.sequence <= state.low_watermark || prepare.sequence > state.high_watermark {
+                return Err(PbftError::InvalidSequence);
+            }
+
+            // Verify signature
+            let sign_data = format!(
+                "block-prepare-{}-{}-{:?}",
+                prepare.view, prepare.sequence, prepare.block_hash
+            );
+            if !verify_node_signature(
+                &prepare.replica_id,
+                sign_data.as_bytes(),
+                &prepare.signature,
+            ) {
+                warn!("Invalid signature on BlockPrepare from {}", prepare.replica_id);
+                return Err(PbftError::InvalidSignature);
+            }
+
+            let sequence = prepare.sequence;
+            let instance = state.get_or_create_block_instance(sequence);
+
+            // Check for matching pre-prepare
+            if let Some(ref pp) = instance.pre_prepare {
+                if pp.block_hash != prepare.block_hash {
+                    return Err(PbftError::InvalidMessage);
+                }
+            }
+
+            // Check for duplicate
+            if instance.prepares.contains_key(&prepare.replica_id) {
+                return Ok(());
+            }
+
+            debug!(
+                "Received BlockPrepare for sequence {} from {}",
+                prepare.sequence, prepare.replica_id
+            );
+
+            instance.prepares.insert(prepare.replica_id.clone(), prepare);
+
+            sequence
+        };
+
+        self.try_advance_block_to_prepared(sequence).await?;
+
+        Ok(())
+    }
+
+    /// Try to advance block to prepared state
+    async fn try_advance_block_to_prepared(
+        &self,
+        sequence: SequenceNumber,
+    ) -> Result<(), PbftError> {
+        let commit = {
+            let mut state = self.state.write().await;
+            let quorum = state.config.quorum();
+            let node_id = state.node_id.clone();
+
+            let instance = match state.block_log.get(&sequence) {
+                Some(i) => i,
+                None => return Ok(()),
+            };
+
+            if instance.pre_prepare.is_none() {
+                return Ok(());
+            }
+
+            if instance.phase != Phase::PrePrepared {
+                return Ok(());
+            }
+
+            if instance.prepares.len() < quorum {
+                return Ok(());
+            }
+
+            info!("Block prepared for sequence {}", sequence);
+
+            let view = instance.view;
+            let block_hash = instance.block_hash.unwrap();
+
+            // Create commit message
+            let sign_data = format!("block-commit-{}-{}-{:?}", view, sequence, block_hash);
+            let signature = state.sign(sign_data.as_bytes());
+
+            let commit = BlockCommit {
+                view,
+                sequence,
+                block_hash,
+                replica_id: node_id.clone(),
+                signature,
+            };
+
+            let instance = state.block_log.get_mut(&sequence).unwrap();
+            instance.phase = Phase::Prepared;
+            instance.commits.insert(node_id, commit.clone());
+
+            commit
+        };
+
+        let msg = NetworkMessage::Consensus(ConsensusMessage::BlockCommit(commit));
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
+
+        self.try_advance_block_to_committed(sequence).await?;
+
+        Ok(())
+    }
+
+    /// Handle a block commit message
+    pub async fn handle_block_commit(&self, commit: BlockCommit) -> Result<(), PbftError> {
+        let sequence = {
+            let mut state = self.state.write().await;
+
+            // Validate view
+            if commit.view != state.view {
+                return Err(PbftError::InvalidView);
+            }
+
+            // Validate sequence
+            if commit.sequence <= state.low_watermark || commit.sequence > state.high_watermark {
+                return Err(PbftError::InvalidSequence);
+            }
+
+            // Verify signature
+            let sign_data = format!(
+                "block-commit-{}-{}-{:?}",
+                commit.view, commit.sequence, commit.block_hash
+            );
+            if !verify_node_signature(
+                &commit.replica_id,
+                sign_data.as_bytes(),
+                &commit.signature,
+            ) {
+                warn!("Invalid signature on BlockCommit from {}", commit.replica_id);
+                return Err(PbftError::InvalidSignature);
+            }
+
+            let sequence = commit.sequence;
+            let instance = state.get_or_create_block_instance(sequence);
+
+            // Validate block hash matches
+            if let Some(instance_hash) = instance.block_hash {
+                if commit.block_hash != instance_hash {
+                    warn!(
+                        "BlockCommit hash mismatch from {}: expected {:?}, got {:?}",
+                        commit.replica_id, instance_hash, commit.block_hash
+                    );
+                    return Err(PbftError::InvalidMessage);
+                }
+            }
+
+            // Check for duplicate
+            if instance.commits.contains_key(&commit.replica_id) {
+                return Ok(());
+            }
+
+            info!(
+                "Received BlockCommit for sequence {} from {}, total commits: {}",
+                commit.sequence,
+                commit.replica_id,
+                instance.commits.len() + 1
+            );
+
+            instance.commits.insert(commit.replica_id.clone(), commit);
+
+            sequence
+        };
+
+        self.try_advance_block_to_committed(sequence).await?;
+
+        Ok(())
+    }
+
+    /// Try to advance block to committed state
+    async fn try_advance_block_to_committed(
+        &self,
+        sequence: SequenceNumber,
+    ) -> Result<(), PbftError> {
+        let block_to_commit = {
+            let mut state = self.state.write().await;
+            let quorum = state.config.quorum();
+
+            let instance = match state.block_log.get(&sequence) {
+                Some(i) => i,
+                None => return Ok(()),
+            };
+
+            if instance.phase != Phase::Prepared {
+                debug!(
+                    "try_advance_block_to_committed: phase is {:?}, not Prepared",
+                    instance.phase
+                );
+                return Ok(());
+            }
+
+            if instance.commits.len() < quorum {
+                debug!(
+                    "try_advance_block_to_committed: commits {} < quorum {}",
+                    instance.commits.len(),
+                    quorum
+                );
+                return Ok(());
+            }
+
+            let block_to_commit = if let Some(ref block) = instance.block {
+                let block_hash = block.hash();
+                if !state.committed_blocks.contains(&block_hash) {
+                    // Collect commit signatures
+                    let mut block_with_sigs = block.clone();
+                    for (replica_id, commit) in &instance.commits {
+                        block_with_sigs.add_signature(crate::types::BlockSignature {
+                            replica_id: replica_id.clone(),
+                            signature: commit.signature.clone(),
+                        });
+                    }
+                    Some((block_with_sigs, block_hash))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Update phase
+            let instance = state.block_log.get_mut(&sequence).unwrap();
+            instance.phase = Phase::Committed;
+
+            // Mark as committed
+            if let Some((_, block_hash)) = &block_to_commit {
+                state.committed_blocks.insert(*block_hash);
+            }
+
+            info!("Block committed for sequence {}", sequence);
+
+            block_to_commit
+        };
+
+        // Send committed block outside the lock
+        if let Some((block, _)) = block_to_commit {
+            if let Some(ref tx) = self.block_committed_tx {
+                let _ = tx.send(block).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Get current view
+    pub async fn current_view(&self) -> ViewNumber {
+        self.state.read().await.view
+    }
+
+    /// Get current sequence
+    pub async fn current_sequence(&self) -> SequenceNumber {
+        self.state.read().await.sequence
+    }
+
+    /// Check if we are the primary
+    pub async fn is_primary(&self) -> bool {
+        self.state.read().await.is_primary()
+    }
+
+    /// Get replica count
+    pub async fn replica_count(&self) -> usize {
+        self.state.read().await.replicas.len()
     }
 }

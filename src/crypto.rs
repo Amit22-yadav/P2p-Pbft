@@ -13,6 +13,7 @@ pub enum CryptoError {
 }
 
 /// Keypair for signing and verification
+#[derive(Clone)]
 pub struct KeyPair {
     signing_key: SigningKey,
     verifying_key: VerifyingKey,

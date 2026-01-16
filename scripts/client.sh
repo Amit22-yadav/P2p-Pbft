@@ -5,6 +5,9 @@
 
 set -e
 
+# Change to project root directory (parent of scripts/)
+cd "$(dirname "$0")/.." || exit 1
+
 RPC_URL=${RPC_URL:-"http://localhost:8545"}
 BINARY="./target/release/p2p-pbft"
 
@@ -196,15 +199,17 @@ case "${1:-help}" in
         # Show validator addresses (these are funded in genesis)
         echo -e "${BLUE}2. Validator addresses (funded in genesis):${NC}"
         for i in 0 1 2 3; do
-            seed=$(printf '%064d' $i)
+            # Seed format: index byte at position 0, rest zeros (e.g., 0100000...000 for validator 1)
+            seed=$(printf '%02x' $i)$(printf '%062d' 0)
             addr=$($BINARY keygen --seed "$seed" 2>/dev/null | grep "Address:" | awk '{print $2}')
             balance=$(rpc_call "eth_getBalance" "\"$addr\"" | jq -r '.result // 0')
             echo "   Validator $i: $addr (balance: $balance)"
         done
         echo ""
 
-        # Get validator 0's address for demo
-        VALIDATOR_0_ADDR=$($BINARY keygen --seed "$(printf '%064d' 0)" 2>/dev/null | grep "Address:" | awk '{print $2}')
+        # Get validator 0's address and seed for demo
+        VALIDATOR_0_SEED="0000000000000000000000000000000000000000000000000000000000000000"
+        VALIDATOR_0_ADDR=$($BINARY keygen --seed "$VALIDATOR_0_SEED" 2>/dev/null | grep "Address:" | awk '{print $2}')
 
         # Create a new account
         echo -e "${BLUE}3. Creating a new account...${NC}"
@@ -229,9 +234,13 @@ case "${1:-help}" in
             exit 1
         fi
 
-        VALIDATOR_0_SEED=$(printf '%064d' 0)
-        result=$($WALLET send --seed "$VALIDATOR_0_SEED" --to "$NEW_ADDR" --value 1000 --nonce 0 --rpc "$RPC_URL" 2>&1)
-        tx_hash=$(echo "$result" | grep -oP 'Result: "\K[^"]+' || echo "submitted")
+        # Get current nonce for validator 0
+        current_nonce_hex=$(rpc_call "eth_getTransactionCount" "\"$VALIDATOR_0_ADDR\"" | jq -r '.result // "0x0"')
+        current_nonce=$((current_nonce_hex))
+        echo "   Nonce: $current_nonce"
+
+        result=$($WALLET send --seed "$VALIDATOR_0_SEED" --to "$NEW_ADDR" --value 1000 --nonce "$current_nonce" --rpc "$RPC_URL" 2>&1)
+        tx_hash=$(echo "$result" | grep -o '"hash": "[^"]*"' | cut -d'"' -f4 || echo "submitted")
 
         if echo "$result" | grep -q "Transaction submitted"; then
             echo -e "${GREEN}   Transaction submitted successfully${NC}"
@@ -274,7 +283,7 @@ case "${1:-help}" in
         height=$(rpc_call "eth_blockNumber" "" | jq -r '.result // 0')
         echo "   Height: $height"
         if [ "$height" != "0" ]; then
-            rpc_call "eth_getBlockByNumber" "\"$height\"" | jq '.result | {height: .height, hash: .hash, tx_count: (.transactions | length)}'
+            rpc_call "eth_getBlockByNumber" "\"$height\"" | jq '.result | {number: .number, hash: .hash, tx_count: (.transactions | length)}'
         fi
         echo ""
 
@@ -289,7 +298,8 @@ case "${1:-help}" in
         echo -e "${BLUE}Validator accounts (deterministic from index):${NC}"
         echo ""
         for i in 0 1 2 3; do
-            seed=$(printf '%064d' $i)
+            # Seed format: index byte at position 0, rest zeros (e.g., 0100000...000 for validator 1)
+            seed=$(printf '%02x' $i)$(printf '%062d' 0)
             output=$($BINARY keygen --seed "$seed" 2>/dev/null)
             pubkey=$(echo "$output" | grep "Public Key" | awk '{print $4}')
             addr=$(echo "$output" | grep "Address:" | awk '{print $2}')

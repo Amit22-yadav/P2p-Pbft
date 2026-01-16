@@ -5,6 +5,9 @@
 
 set -e
 
+# Change to project root directory (parent of scripts/)
+cd "$(dirname "$0")/.." || exit 1
+
 # Configuration
 NUM_NODES=${NUM_NODES:-4}
 BASE_P2P_PORT=${BASE_P2P_PORT:-9000}
@@ -20,11 +23,19 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Build the project first
-echo -e "${BLUE}Building the project...${NC}"
-cargo build --release
-
 BINARY="./target/release/p2p-pbft"
+
+# Build only if binary doesn't exist
+if [ ! -f "$BINARY" ]; then
+    echo -e "${BLUE}Building the project...${NC}"
+    if command -v cargo &> /dev/null; then
+        cargo build --release
+    else
+        echo -e "${RED}Binary not found at $BINARY and cargo is not available${NC}"
+        echo "Please build the project first: cargo build --release"
+        exit 1
+    fi
+fi
 
 if [ ! -f "$BINARY" ]; then
     echo -e "${RED}Binary not found at $BINARY${NC}"

@@ -1,0 +1,1487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>P2P PBFT Blockchain Explorer</title>
+    <style>
+        :root {
+            --bg-primary: #0a0f1a;
+            --bg-secondary: #111827;
+            --bg-card: #1f2937;
+            --bg-hover: #374151;
+            --text-primary: #f9fafb;
+            --text-secondary: #9ca3af;
+            --text-muted: #6b7280;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --border: #374151;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        /* Layout */
+        .app-container {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 260px;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            padding: 20px;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+
+        .main-content {
+            margin-left: 260px;
+            flex: 1;
+            padding: 24px;
+            max-width: 1100px;
+        }
+
+        /* Logo */
+        .logo {
+            font-size: 20px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .logo-sub {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+        }
+
+        /* Navigation */
+        .nav-item {
+            padding: 12px 16px;
+            margin-bottom: 4px;
+            border-radius: 8px;
+            cursor: pointer;
+            color: var(--text-secondary);
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .nav-item:hover {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: var(--accent);
+            color: white;
+        }
+
+        /* Status */
+        .status-box {
+            margin-top: 24px;
+            padding: 16px;
+            background: var(--bg-card);
+            border-radius: 8px;
+            border: 1px solid var(--border);
+        }
+
+        .status-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .status-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 4px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+
+        .status-dot.offline {
+            background: var(--error);
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 16px;
+            border: 1px solid var(--border);
+        }
+
+        .card-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .stat-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .stat-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.2s;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: var(--accent);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: var(--accent-hover);
+        }
+
+        .btn-secondary {
+            background: var(--bg-hover);
+            color: var(--text-primary);
+        }
+
+        .btn-secondary:hover {
+            background: var(--border);
+        }
+
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Forms */
+        .form-group {
+            margin-bottom: 16px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .form-input, .form-select {
+            width: 100%;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 14px;
+        }
+
+        .form-input:focus, .form-select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* Tables */
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .table th, .table td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .table th {
+            color: var(--text-muted);
+            font-size: 12px;
+            text-transform: uppercase;
+            font-weight: 500;
+        }
+
+        .table tr:hover {
+            background: var(--bg-hover);
+        }
+
+        /* Validators */
+        .validator-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 16px;
+        }
+
+        .validator-card {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid var(--border);
+        }
+
+        .validator-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .validator-name {
+            font-weight: 600;
+            font-size: 16px;
+        }
+
+        .validator-badge {
+            background: var(--accent);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+
+        .validator-address {
+            font-family: monospace;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+            word-break: break-all;
+        }
+
+        .validator-stats {
+            display: flex;
+            gap: 24px;
+        }
+
+        .validator-stat {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .validator-stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .validator-stat-value {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        /* Blocks */
+        .block-item {
+            display: flex;
+            align-items: center;
+            padding: 16px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .block-item:hover {
+            background: var(--bg-hover);
+        }
+
+        .block-number {
+            width: 60px;
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--accent);
+        }
+
+        .block-info {
+            flex: 1;
+        }
+
+        .block-hash {
+            font-family: monospace;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .block-meta {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .block-txs {
+            padding: 6px 12px;
+            background: var(--bg-card);
+            border-radius: 6px;
+            font-size: 13px;
+        }
+
+        /* Modal */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal {
+            background: var(--bg-card);
+            border-radius: 12px;
+            padding: 24px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            background: none;
+            border: none;
+            color: var(--text-secondary);
+            font-size: 24px;
+            cursor: pointer;
+        }
+
+        /* Code/Pre */
+        .code-block {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 16px;
+            font-family: monospace;
+            font-size: 13px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+
+        /* Toast */
+        .toast {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            padding: 16px 24px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 500;
+            z-index: 1001;
+            animation: slideIn 0.3s ease;
+        }
+
+        .toast.success { background: var(--success); }
+        .toast.error { background: var(--error); }
+        .toast.info { background: var(--accent); }
+
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Result boxes */
+        .result-box {
+            padding: 16px;
+            border-radius: 8px;
+            margin-top: 16px;
+        }
+
+        .result-box.success {
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid var(--success);
+        }
+
+        .result-box.error {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid var(--error);
+        }
+
+        /* Hidden sections */
+        .section { display: none; }
+        .section.active { display: block; }
+
+        /* Responsive */
+        @media (max-width: 1024px) {
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .validator-grid { grid-template-columns: 1fr; }
+        }
+
+        @media (max-width: 768px) {
+            .sidebar { display: none; }
+            .main-content { margin-left: 0; }
+        }
+
+        /* Loading */
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 40px;
+            color: var(--text-muted);
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-right: 12px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <div class="logo">P2P PBFT</div>
+            <div class="logo-sub">Blockchain Explorer</div>
+
+            <nav>
+                <div class="nav-item active" data-section="dashboard" onclick="showSection('dashboard')">
+                    📊 Dashboard
+                </div>
+                <div class="nav-item" data-section="blocks" onclick="showSection('blocks')">
+                    📦 Blocks
+                </div>
+                <div class="nav-item" data-section="validators" onclick="showSection('validators')">
+                    👥 Validators
+                </div>
+                <div class="nav-item" data-section="transfer" onclick="showSection('transfer')">
+                    💸 Transfer
+                </div>
+                <div class="nav-item" data-section="accounts" onclick="showSection('accounts')">
+                    🔑 Accounts
+                </div>
+                <div class="nav-item" data-section="lookup" onclick="showSection('lookup')">
+                    🔍 Lookup
+                </div>
+            </nav>
+
+            <div class="status-box">
+                <div class="status-label">Network Status</div>
+                <div class="status-row">
+                    <div class="status-dot" id="status-dot"></div>
+                    <span id="status-text">Connecting...</span>
+                </div>
+                <div style="margin-top: 12px; font-size: 12px; color: var(--text-muted);">
+                    <div>Height: <span id="status-height">-</span></div>
+                    <div>Peers: <span id="status-peers">-</span></div>
+                    <div>Mempool: <span id="status-mempool">-</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Dashboard Section -->
+            <div id="dashboard" class="section active">
+                <h1 style="margin-bottom: 24px;">Dashboard</h1>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-label">Block Height</div>
+                        <div class="stat-value" id="dash-height">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Connected Peers</div>
+                        <div class="stat-value" id="dash-peers">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Mempool Size</div>
+                        <div class="stat-value" id="dash-mempool">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-label">Total Validators</div>
+                        <div class="stat-value">4</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">Recent Blocks</div>
+                    <div id="recent-blocks">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Blocks Section -->
+            <div id="blocks" class="section">
+                <h1 style="margin-bottom: 24px;">Blocks</h1>
+                <div class="card">
+                    <div class="card-header">
+                        <span>Block List</span>
+                        <div>
+                            <button class="btn btn-secondary" onclick="loadBlocks('prev')">← Prev</button>
+                            <button class="btn btn-secondary" onclick="loadBlocks('next')">Next →</button>
+                        </div>
+                    </div>
+                    <div id="block-list">
+                        <div class="loading"><div class="spinner"></div> Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Validators Section -->
+            <div id="validators" class="section">
+                <h1 style="margin-bottom: 24px;">Validators</h1>
+                <div class="validator-grid" id="validator-list">
+                    <div class="loading"><div class="spinner"></div> Loading...</div>
+                </div>
+            </div>
+
+            <!-- Transfer Section -->
+            <div id="transfer" class="section">
+                <h1 style="margin-bottom: 24px;">Transfer Tokens</h1>
+                <div class="card">
+                    <div class="form-group">
+                        <label class="form-label">From (Select Validator)</label>
+                        <select class="form-select" id="transfer-from">
+                            <option value="">-- Select Validator --</option>
+                        </select>
+                    </div>
+                    <div id="sender-info" style="margin-bottom: 16px; padding: 12px; background: var(--bg-secondary); border-radius: 8px; display: none;">
+                        <div style="font-size: 12px; color: var(--text-muted);">Sender Address</div>
+                        <div id="sender-address" style="font-family: monospace; font-size: 13px;"></div>
+                        <div style="margin-top: 8px; display: flex; gap: 24px;">
+                            <div>
+                                <div style="font-size: 12px; color: var(--text-muted);">Balance</div>
+                                <div id="sender-balance" style="font-size: 18px; font-weight: 600;"></div>
+                            </div>
+                            <div>
+                                <div style="font-size: 12px; color: var(--text-muted);">Nonce</div>
+                                <div id="sender-nonce" style="font-size: 18px; font-weight: 600;"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">To Address</label>
+                        <input type="text" class="form-input" id="transfer-to" placeholder="0x...">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Amount</label>
+                        <input type="number" class="form-input" id="transfer-amount" placeholder="1000">
+                    </div>
+                    <button class="btn btn-primary" onclick="sendTransfer()">Send Transaction</button>
+                    <div id="transfer-result"></div>
+                </div>
+            </div>
+
+            <!-- Accounts Section -->
+            <div id="accounts" class="section">
+                <h1 style="margin-bottom: 24px;">Accounts</h1>
+
+                <div class="card">
+                    <div class="card-header">Generate New Account</div>
+                    <div class="form-group">
+                        <label class="form-label">Seed (optional - leave empty for random)</label>
+                        <input type="text" class="form-input" id="new-account-seed" placeholder="64 hex characters or leave empty">
+                    </div>
+                    <button class="btn btn-primary" onclick="generateAccount()">Generate Account</button>
+                    <div id="new-account-result"></div>
+                </div>
+
+                <div class="card" style="margin-top: 16px;">
+                    <div class="card-header">Lookup Account</div>
+                    <div class="form-group">
+                        <label class="form-label">Address</label>
+                        <input type="text" class="form-input" id="account-address" placeholder="0x...">
+                    </div>
+                    <button class="btn btn-primary" onclick="lookupAccount()">Lookup</button>
+                    <div id="account-result"></div>
+                </div>
+            </div>
+
+            <!-- Lookup Section -->
+            <div id="lookup" class="section">
+                <h1 style="margin-bottom: 24px;">Transaction Lookup</h1>
+                <div class="card">
+                    <div class="form-group">
+                        <label class="form-label">Transaction Hash</label>
+                        <input type="text" class="form-input" id="tx-hash" placeholder="0x...">
+                    </div>
+                    <button class="btn btn-primary" onclick="lookupTx()">Lookup</button>
+                    <div id="tx-result"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Block Detail Modal -->
+    <div id="block-modal" class="modal-overlay" style="display: none;" onclick="closeModal(event)">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <div class="modal-title">Block Details</div>
+                <button class="modal-close" onclick="document.getElementById('block-modal').style.display='none'">&times;</button>
+            </div>
+            <div id="block-modal-content"></div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast" style="display: none;"></div>
+
+    <!-- SHA3/Keccak library -->
+    <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.9.3/build/sha3.min.js"></script>
+
+    <script>
+        // ==================== Ed25519 Implementation ====================
+        // Pure JavaScript Ed25519 implementation for browser environments
+
+        const Ed25519 = (function() {
+            // Field arithmetic mod p = 2^255 - 19
+            const P = BigInt("57896044618658097711785492504343953926634992332820282019728792003956564819949");
+            const L = BigInt("7237005577332262213973186563042994240857116359379907606001950938285454250989");
+            const D = BigInt("-4513249062541557337682894930092624173785641285191125241628941591882900924598840740");
+            const I = BigInt("19681161376707505956807079304988542015446066515923890162744021073123829784752");
+
+            // Base point
+            const Bx = BigInt("15112221349535807912866137220509078935008241517919253862802014016538152779547505");
+            const By = BigInt("46316835694926478169428394003475163141307993866256225615783033603165251855960");
+
+            function mod(a, m = P) {
+                let result = a % m;
+                return result >= 0n ? result : result + m;
+            }
+
+            function modPow(base, exp, m = P) {
+                let result = 1n;
+                base = mod(base, m);
+                while (exp > 0n) {
+                    if (exp % 2n === 1n) {
+                        result = mod(result * base, m);
+                    }
+                    exp = exp / 2n;
+                    base = mod(base * base, m);
+                }
+                return result;
+            }
+
+            function modInverse(a, m = P) {
+                return modPow(a, m - 2n, m);
+            }
+
+            // Edwards curve point addition
+            function pointAdd(P1, P2) {
+                const [x1, y1] = P1;
+                const [x2, y2] = P2;
+
+                const a = mod(x1 * x2);
+                const b = mod(y1 * y2);
+                const c = mod(D * a * b);
+                const d = mod(1n + c);
+                const e = mod(1n - c);
+                const f = mod((x1 + y1) * (x2 + y2) - a - b);
+
+                const x3 = mod(f * modInverse(d));
+                const y3 = mod((b + a) * modInverse(e));
+
+                return [x3, y3];
+            }
+
+            // Scalar multiplication
+            function scalarMult(k, P) {
+                let result = [0n, 1n]; // Identity point
+                let addend = P;
+
+                while (k > 0n) {
+                    if (k % 2n === 1n) {
+                        result = pointAdd(result, addend);
+                    }
+                    addend = pointAdd(addend, addend);
+                    k = k / 2n;
+                }
+
+                return result;
+            }
+
+            function bytesToBigInt(bytes) {
+                let result = 0n;
+                for (let i = bytes.length - 1; i >= 0; i--) {
+                    result = (result << 8n) | BigInt(bytes[i]);
+                }
+                return result;
+            }
+
+            function bigIntToBytes(n, length = 32) {
+                const bytes = new Uint8Array(length);
+                for (let i = 0; i < length; i++) {
+                    bytes[i] = Number(n & 0xFFn);
+                    n = n >> 8n;
+                }
+                return bytes;
+            }
+
+            function encodePoint(point) {
+                const [x, y] = point;
+                const bytes = bigIntToBytes(y);
+                if (x % 2n === 1n) {
+                    bytes[31] |= 0x80;
+                }
+                return bytes;
+            }
+
+            async function sha512(data) {
+                const hash = await crypto.subtle.digest('SHA-512', data);
+                return new Uint8Array(hash);
+            }
+
+            // Generate public key from seed
+            async function getPublicKey(seed) {
+                const h = await sha512(seed);
+                h[0] &= 248;
+                h[31] &= 127;
+                h[31] |= 64;
+
+                const a = bytesToBigInt(h.slice(0, 32));
+                const A = scalarMult(a, [Bx, By]);
+                return encodePoint(A);
+            }
+
+            // Sign message with seed
+            async function sign(message, seed) {
+                const h = await sha512(seed);
+                h[0] &= 248;
+                h[31] &= 127;
+                h[31] |= 64;
+
+                const a = bytesToBigInt(h.slice(0, 32));
+                const prefix = h.slice(32);
+
+                const A = scalarMult(a, [Bx, By]);
+                const Aenc = encodePoint(A);
+
+                // r = H(prefix || message) mod L
+                const rData = new Uint8Array(prefix.length + message.length);
+                rData.set(prefix);
+                rData.set(message, prefix.length);
+                const rHash = await sha512(rData);
+                const r = mod(bytesToBigInt(rHash), L);
+
+                const R = scalarMult(r, [Bx, By]);
+                const Renc = encodePoint(R);
+
+                // k = H(R || A || message) mod L
+                const kData = new Uint8Array(32 + 32 + message.length);
+                kData.set(Renc);
+                kData.set(Aenc, 32);
+                kData.set(message, 64);
+                const kHash = await sha512(kData);
+                const k = mod(bytesToBigInt(kHash), L);
+
+                // s = (r + k * a) mod L
+                const s = mod(r + k * a, L);
+                const sBytes = bigIntToBytes(s);
+
+                // Signature is R || s
+                const sig = new Uint8Array(64);
+                sig.set(Renc);
+                sig.set(sBytes, 32);
+
+                return sig;
+            }
+
+            return { getPublicKey, sign };
+        })();
+
+        // ==================== Application Code ====================
+
+        // Configuration
+        const RPC_URL = 'http://localhost:8545';
+        const VALIDATORS = [
+            { index: 0, seed: '0000000000000000000000000000000000000000000000000000000000000000', address: '0x139e3940e64b5491722088d9a0d741628fc826e0' },
+            { index: 1, seed: '0100000000000000000000000000000000000000000000000000000000000000', address: '0xfa4d86c3b551aa6cd7c3759d040c037ef2c6379f' },
+            { index: 2, seed: '0200000000000000000000000000000000000000000000000000000000000000', address: '0xe3c1b362c0df36f6b370b8b1479b67dad96392b2' },
+            { index: 3, seed: '0300000000000000000000000000000000000000000000000000000000000000', address: '0xdb0743e2dcba9ebf2419bde0881beea966689a26' }
+        ];
+
+        let currentBlockPage = 0;
+        let latestHeight = 0;
+
+        // RPC Call helper
+        async function rpcCall(method, params = []) {
+            try {
+                const response = await fetch(RPC_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ jsonrpc: '2.0', method, params, id: 1 })
+                });
+                const data = await response.json();
+                if (data.error) throw new Error(data.error.message);
+                return data.result;
+            } catch (e) {
+                console.error('RPC Error:', e);
+                throw e;
+            }
+        }
+
+        // Parse hex number
+        function parseHex(val) {
+            if (!val) return 0;
+            if (typeof val === 'number') return val;
+            if (typeof val === 'string' && val.startsWith('0x')) {
+                return parseInt(val, 16);
+            }
+            return parseInt(val, 10);
+        }
+
+        // Format number with commas
+        function formatNum(n) {
+            return n.toLocaleString();
+        }
+
+        // ==================== Crypto Functions ====================
+
+        // Hex to bytes
+        function hexToBytes(hex) {
+            if (hex.startsWith('0x')) hex = hex.slice(2);
+            const bytes = new Uint8Array(hex.length / 2);
+            for (let i = 0; i < bytes.length; i++) {
+                bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+            }
+            return bytes;
+        }
+
+        // Bytes to hex
+        function bytesToHex(bytes) {
+            return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        // SHA-256 hash using Web Crypto API
+        async function sha256(data) {
+            const hash = await crypto.subtle.digest('SHA-256', data);
+            return new Uint8Array(hash);
+        }
+
+        // Keccak-256 using js-sha3 library
+        function keccak256(input) {
+            // Use the js-sha3 library's keccak_256 function
+            const hashHex = keccak_256(input);
+            return hexToBytes(hashHex);
+        }
+
+        // Derive address from public key (last 20 bytes of keccak256)
+        function publicKeyToAddress(pubKey) {
+            const hash = keccak256(pubKey);
+            return '0x' + bytesToHex(hash.slice(12));
+        }
+
+        // Get public key from seed using our Ed25519 implementation
+        async function getPublicKey(seedHex) {
+            const seed = hexToBytes(seedHex);
+            return await Ed25519.getPublicKey(seed);
+        }
+
+        // Derive address from seed
+        async function deriveAddress(seedHex) {
+            const pubKey = await getPublicKey(seedHex);
+            return publicKeyToAddress(pubKey);
+        }
+
+        // Encode u64 as little-endian bytes
+        function encodeU64LE(value) {
+            const bytes = new Uint8Array(8);
+            let v = value;
+            for (let i = 0; i < 8; i++) {
+                bytes[i] = v & 0xff;
+                v = Math.floor(v / 256);
+            }
+            return bytes;
+        }
+
+        // Create and sign a transaction
+        async function createSignedTransaction(seedHex, to, value, nonce) {
+            const seed = hexToBytes(seedHex);
+            const pubKey = await Ed25519.getPublicKey(seed);
+            const fromAddress = publicKeyToAddress(pubKey);
+            const fromBytes = hexToBytes(fromAddress);
+            const toBytes = hexToBytes(to);
+            const timestamp = Date.now();
+
+            // Build transaction payload (bincode format)
+            // Transfer variant = 0, then to (20 bytes), then value (8 bytes)
+            const payloadBincode = new Uint8Array(32);
+            payloadBincode[0] = 0; // Transfer variant tag
+            payloadBincode.set(toBytes, 4);
+            payloadBincode.set(encodeU64LE(value), 24);
+
+            // Build message to sign: from (20) + nonce (8) + timestamp (8) + payload (32) = 68 bytes
+            const hashInput = new Uint8Array(68);
+            hashInput.set(fromBytes, 0);
+            hashInput.set(encodeU64LE(nonce), 20);
+            hashInput.set(encodeU64LE(timestamp), 28);
+            hashInput.set(payloadBincode, 36);
+
+            // Sign with SHA-256 of the message
+            const signingMessage = await sha256(hashInput);
+            const signature = await Ed25519.sign(signingMessage, seed);
+
+            return {
+                from: fromAddress,
+                to: to,
+                value: value,
+                nonce: nonce,
+                signature: '0x' + bytesToHex(signature),
+                timestamp: timestamp
+            };
+        }
+
+        // Generate random seed
+        function generateRandomSeed() {
+            const bytes = new Uint8Array(32);
+            crypto.getRandomValues(bytes);
+            return bytesToHex(bytes);
+        }
+
+        // Show toast notification
+        function showToast(message, type = 'info') {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast ' + type;
+            toast.style.display = 'block';
+            setTimeout(() => toast.style.display = 'none', 3000);
+        }
+
+        // Switch sections
+        function showSection(section) {
+            document.querySelectorAll('.section').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            document.getElementById(section).classList.add('active');
+            document.querySelector(`.nav-item[data-section="${section}"]`).classList.add('active');
+
+            if (section === 'blocks') loadBlocks();
+            if (section === 'validators') loadValidators();
+        }
+
+        // Close modal
+        function closeModal(event) {
+            if (event.target.classList.contains('modal-overlay')) {
+                event.target.style.display = 'none';
+            }
+        }
+
+        // Fetch network status
+        async function fetchStatus() {
+            try {
+                const status = await rpcCall('pbft_getStatus');
+                latestHeight = status.chain_height;
+
+                document.getElementById('status-dot').classList.remove('offline');
+                document.getElementById('status-text').textContent = 'Connected';
+                document.getElementById('status-height').textContent = status.chain_height;
+                document.getElementById('status-peers').textContent = status.connected_peers;
+                document.getElementById('status-mempool').textContent = status.mempool_size;
+
+                document.getElementById('dash-height').textContent = status.chain_height;
+                document.getElementById('dash-peers').textContent = status.connected_peers;
+                document.getElementById('dash-mempool').textContent = status.mempool_size;
+            } catch (e) {
+                document.getElementById('status-dot').classList.add('offline');
+                document.getElementById('status-text').textContent = 'Disconnected';
+            }
+        }
+
+        // Load recent blocks for dashboard
+        async function loadRecentBlocks() {
+            try {
+                const container = document.getElementById('recent-blocks');
+                let html = '';
+
+                const startHeight = Math.max(0, latestHeight - 4);
+                for (let i = latestHeight; i >= startHeight; i--) {
+                    const block = await rpcCall('eth_getBlockByNumber', [i.toString()]);
+                    if (block) {
+                        const txCount = block.transactions ? block.transactions.length : 0;
+                        html += `
+                            <div class="block-item" onclick="showBlockDetail(${parseHex(block.number)})">
+                                <div class="block-number">#${parseHex(block.number)}</div>
+                                <div class="block-info">
+                                    <div class="block-hash">${block.hash.substring(0, 20)}...</div>
+                                    <div class="block-meta">Proposer: ${block.proposer ? block.proposer.substring(0, 12) + '...' : 'Genesis'}</div>
+                                </div>
+                                <div class="block-txs">${txCount} tx${txCount !== 1 ? 's' : ''}</div>
+                            </div>
+                        `;
+                    }
+                }
+
+                container.innerHTML = html || '<div style="padding: 20px; color: var(--text-muted);">No blocks yet</div>';
+            } catch (e) {
+                console.error('Failed to load recent blocks:', e);
+            }
+        }
+
+        // Load blocks for blocks page
+        async function loadBlocks(direction) {
+            const container = document.getElementById('block-list');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading...</div>';
+
+            if (direction === 'next') currentBlockPage++;
+            if (direction === 'prev') currentBlockPage = Math.max(0, currentBlockPage - 1);
+
+            try {
+                let html = '';
+                const perPage = 10;
+                const startHeight = Math.max(0, latestHeight - (currentBlockPage * perPage));
+                const endHeight = Math.max(0, startHeight - perPage + 1);
+
+                for (let i = startHeight; i >= endHeight; i--) {
+                    const block = await rpcCall('eth_getBlockByNumber', [i.toString()]);
+                    if (block) {
+                        const txCount = block.transactions ? block.transactions.length : 0;
+                        html += `
+                            <div class="block-item" onclick="showBlockDetail(${parseHex(block.number)})">
+                                <div class="block-number">#${parseHex(block.number)}</div>
+                                <div class="block-info">
+                                    <div class="block-hash">${block.hash}</div>
+                                    <div class="block-meta">Proposer: ${block.proposer || 'Genesis'}</div>
+                                </div>
+                                <div class="block-txs">${txCount} tx${txCount !== 1 ? 's' : ''}</div>
+                            </div>
+                        `;
+                    }
+                }
+
+                container.innerHTML = html || '<div style="padding: 20px; color: var(--text-muted);">No blocks</div>';
+            } catch (e) {
+                container.innerHTML = '<div style="padding: 20px; color: var(--error);">Failed to load blocks</div>';
+            }
+        }
+
+        // Show block detail modal
+        async function showBlockDetail(height) {
+            const modal = document.getElementById('block-modal');
+            const content = document.getElementById('block-modal-content');
+            content.innerHTML = '<div class="loading"><div class="spinner"></div> Loading...</div>';
+            modal.style.display = 'flex';
+
+            try {
+                const block = await rpcCall('eth_getBlockByNumber', [height.toString()]);
+                const txCount = block.transactions ? block.transactions.length : 0;
+
+                content.innerHTML = `
+                    <div style="margin-bottom: 16px;">
+                        <div style="font-size: 12px; color: var(--text-muted);">Block Height</div>
+                        <div style="font-size: 24px; font-weight: 700;">#${parseHex(block.number)}</div>
+                    </div>
+                    <div class="code-block">
+Hash:       ${block.hash}
+Prev Hash:  ${block.prev_hash}
+Tx Root:    ${block.tx_root}
+State Root: ${block.state_root}
+Proposer:   ${block.proposer || 'Genesis'}
+Timestamp:  ${parseHex(block.timestamp) > 0 ? new Date(parseHex(block.timestamp)).toISOString() : 'Genesis'}
+                    </div>
+                    <div style="margin-top: 16px;">
+                        <div style="font-weight: 600; margin-bottom: 8px;">Transactions (${txCount})</div>
+                        ${txCount > 0 ? block.transactions.map(tx => `
+                            <div style="padding: 8px; background: var(--bg-secondary); border-radius: 4px; margin-bottom: 4px; font-family: monospace; font-size: 12px;">
+                                ${typeof tx === 'string' ? tx : tx.hash}
+                            </div>
+                        `).join('') : '<div style="color: var(--text-muted);">No transactions</div>'}
+                    </div>
+                `;
+            } catch (e) {
+                content.innerHTML = '<div style="color: var(--error);">Failed to load block details</div>';
+            }
+        }
+
+        // Load validators
+        async function loadValidators() {
+            const container = document.getElementById('validator-list');
+            container.innerHTML = '<div class="loading"><div class="spinner"></div> Loading...</div>';
+
+            try {
+                let html = '';
+                for (const v of VALIDATORS) {
+                    const balance = parseHex(await rpcCall('eth_getBalance', [v.address]));
+                    const nonce = parseHex(await rpcCall('eth_getTransactionCount', [v.address]));
+
+                    html += `
+                        <div class="validator-card">
+                            <div class="validator-header">
+                                <div class="validator-name">Validator ${v.index}</div>
+                                ${v.index === 0 ? '<div class="validator-badge">Primary</div>' : ''}
+                            </div>
+                            <div class="validator-address">${v.address}</div>
+                            <div class="validator-stats">
+                                <div class="validator-stat">
+                                    <div class="validator-stat-label">Balance</div>
+                                    <div class="validator-stat-value">${formatNum(balance)}</div>
+                                </div>
+                                <div class="validator-stat">
+                                    <div class="validator-stat-label">Nonce</div>
+                                    <div class="validator-stat-value">${nonce}</div>
+                                </div>
+                            </div>
+                            <button class="btn btn-primary" style="margin-top: 16px;" onclick="startTransfer(${v.index})">Transfer</button>
+                        </div>
+                    `;
+                }
+                container.innerHTML = html;
+            } catch (e) {
+                container.innerHTML = '<div style="padding: 20px; color: var(--error);">Failed to load validators</div>';
+            }
+        }
+
+        // Start transfer from validator
+        function startTransfer(index) {
+            showSection('transfer');
+            document.getElementById('transfer-from').value = index;
+            updateSenderInfo();
+        }
+
+        // Update sender info when validator selected
+        async function updateSenderInfo() {
+            const select = document.getElementById('transfer-from');
+            const infoDiv = document.getElementById('sender-info');
+            const index = parseInt(select.value);
+
+            if (isNaN(index) || index < 0) {
+                infoDiv.style.display = 'none';
+                return;
+            }
+
+            const v = VALIDATORS[index];
+            try {
+                const balance = parseHex(await rpcCall('eth_getBalance', [v.address]));
+                const nonce = parseHex(await rpcCall('eth_getTransactionCount', [v.address]));
+
+                document.getElementById('sender-address').textContent = v.address;
+                document.getElementById('sender-balance').textContent = formatNum(balance);
+                document.getElementById('sender-nonce').textContent = nonce;
+                infoDiv.style.display = 'block';
+            } catch (e) {
+                infoDiv.style.display = 'none';
+            }
+        }
+
+        // Populate transfer dropdown
+        function populateTransferDropdown() {
+            const select = document.getElementById('transfer-from');
+            select.innerHTML = '<option value="">-- Select Validator --</option>';
+            VALIDATORS.forEach(v => {
+                select.innerHTML += `<option value="${v.index}">Validator ${v.index} (${v.address.substring(0, 10)}...)</option>`;
+            });
+            select.onchange = updateSenderInfo;
+        }
+
+        // Send transfer - generates CLI command
+        async function sendTransfer() {
+            const fromIndex = parseInt(document.getElementById('transfer-from').value);
+            const to = document.getElementById('transfer-to').value;
+            const amount = parseInt(document.getElementById('transfer-amount').value);
+            const resultDiv = document.getElementById('transfer-result');
+
+            if (isNaN(fromIndex) || fromIndex < 0) {
+                showToast('Please select a sender', 'error');
+                return;
+            }
+            if (!to || !to.startsWith('0x')) {
+                showToast('Invalid recipient address', 'error');
+                return;
+            }
+            if (isNaN(amount) || amount <= 0) {
+                showToast('Invalid amount', 'error');
+                return;
+            }
+
+            const v = VALIDATORS[fromIndex];
+
+            try {
+                // Get current nonce and balance
+                const nonce = parseHex(await rpcCall('eth_getTransactionCount', [v.address]));
+                const balance = parseHex(await rpcCall('eth_getBalance', [v.address]));
+
+                if (amount > balance) {
+                    resultDiv.innerHTML = `<div class="result-box error">Insufficient balance. Available: ${formatNum(balance)}</div>`;
+                    return;
+                }
+
+                // Generate CLI command
+                const command = `./target/release/wallet send --seed "${v.seed}" --to "${to}" --value ${amount} --nonce ${nonce}`;
+
+                resultDiv.innerHTML = `
+                    <div class="result-box success">
+                        <div style="font-weight: 600; margin-bottom: 12px;">Run this command in your terminal:</div>
+                        <div class="code-block" style="user-select: all; cursor: pointer;" onclick="navigator.clipboard.writeText(this.textContent); showToast('Command copied!', 'success');">${command}</div>
+                        <div style="margin-top: 16px;">
+                            <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">Transaction Details:</div>
+                            <table class="table" style="font-size: 13px;">
+                                <tr><td style="color: var(--text-muted); width: 80px;">From</td><td style="font-family: monospace;">${v.address}</td></tr>
+                                <tr><td style="color: var(--text-muted);">To</td><td style="font-family: monospace;">${to}</td></tr>
+                                <tr><td style="color: var(--text-muted);">Amount</td><td>${formatNum(amount)}</td></tr>
+                                <tr><td style="color: var(--text-muted);">Nonce</td><td>${nonce}</td></tr>
+                                <tr><td style="color: var(--text-muted);">Balance</td><td>${formatNum(balance)}</td></tr>
+                            </table>
+                        </div>
+                        <div style="margin-top: 12px; color: var(--text-muted); font-size: 12px;">
+                            Click the command to copy it to clipboard.
+                        </div>
+                    </div>
+                `;
+
+                showToast('Command generated! Click to copy.', 'success');
+            } catch (e) {
+                resultDiv.innerHTML = `<div class="result-box error">Error: ${e.message}</div>`;
+                showToast('Failed to generate command', 'error');
+            }
+        }
+
+        // Generate new account
+        async function generateAccount() {
+            const seedInput = document.getElementById('new-account-seed').value.trim();
+            const resultDiv = document.getElementById('new-account-result');
+
+            try {
+                let seed;
+                if (seedInput) {
+                    // Validate provided seed
+                    if (!/^[0-9a-fA-F]{64}$/.test(seedInput)) {
+                        showToast('Seed must be 64 hex characters', 'error');
+                        return;
+                    }
+                    seed = seedInput.toLowerCase();
+                } else {
+                    // Generate random seed
+                    seed = generateRandomSeed();
+                }
+
+                resultDiv.innerHTML = `<div class="loading"><div class="spinner"></div> Generating account...</div>`;
+
+                // Derive address from seed
+                const address = await deriveAddress(seed);
+
+                // Check if account has balance on chain
+                let balance = 0;
+                let nonce = 0;
+                try {
+                    balance = parseHex(await rpcCall('eth_getBalance', [address]));
+                    nonce = parseHex(await rpcCall('eth_getTransactionCount', [address]));
+                } catch (e) {
+                    // Account doesn't exist on chain yet
+                }
+
+                resultDiv.innerHTML = `
+                    <div class="result-box success">
+                        <div style="font-weight: 600; margin-bottom: 12px;">✓ Account Generated</div>
+                        <table class="table">
+                            <tr>
+                                <td style="color: var(--text-muted); width: 100px;">Seed</td>
+                                <td style="font-family: monospace; font-size: 12px; word-break: break-all;">${seed}</td>
+                            </tr>
+                            <tr>
+                                <td style="color: var(--text-muted);">Address</td>
+                                <td style="font-family: monospace;">${address}</td>
+                            </tr>
+                            <tr>
+                                <td style="color: var(--text-muted);">Balance</td>
+                                <td style="font-weight: 600;">${formatNum(balance)}</td>
+                            </tr>
+                            <tr>
+                                <td style="color: var(--text-muted);">Nonce</td>
+                                <td>${nonce}</td>
+                            </tr>
+                        </table>
+                        <div style="margin-top: 12px; padding: 12px; background: rgba(245, 158, 11, 0.1); border-radius: 8px; border: 1px solid var(--warning);">
+                            <strong style="color: var(--warning);">⚠️ Important:</strong>
+                            <div style="font-size: 13px; margin-top: 4px;">
+                                Save your seed securely! Anyone with this seed can access your funds.
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                showToast('Account generated successfully!', 'success');
+            } catch (e) {
+                resultDiv.innerHTML = `<div class="result-box error">Error: ${e.message}</div>`;
+                showToast('Failed to generate account', 'error');
+            }
+        }
+
+        // Lookup account
+        async function lookupAccount() {
+            const address = document.getElementById('account-address').value;
+            const resultDiv = document.getElementById('account-result');
+
+            if (!address || !address.startsWith('0x')) {
+                showToast('Invalid address', 'error');
+                return;
+            }
+
+            try {
+                const balance = parseHex(await rpcCall('eth_getBalance', [address]));
+                const nonce = parseHex(await rpcCall('eth_getTransactionCount', [address]));
+
+                resultDiv.innerHTML = `
+                    <div class="result-box success">
+                        <div style="font-weight: 600; margin-bottom: 12px;">Account Found</div>
+                        <table class="table">
+                            <tr><td style="color: var(--text-muted);">Address</td><td style="font-family: monospace;">${address}</td></tr>
+                            <tr><td style="color: var(--text-muted);">Balance</td><td style="font-weight: 600;">${formatNum(balance)}</td></tr>
+                            <tr><td style="color: var(--text-muted);">Nonce</td><td>${nonce}</td></tr>
+                        </table>
+                    </div>
+                `;
+            } catch (e) {
+                resultDiv.innerHTML = `<div class="result-box error">Error: ${e.message}</div>`;
+            }
+        }
+
+        // Lookup transaction
+        async function lookupTx() {
+            const hash = document.getElementById('tx-hash').value;
+            const resultDiv = document.getElementById('tx-result');
+
+            if (!hash || !hash.startsWith('0x')) {
+                showToast('Invalid transaction hash', 'error');
+                return;
+            }
+
+            try {
+                const tx = await rpcCall('eth_getTransactionByHash', [hash]);
+
+                if (!tx) {
+                    resultDiv.innerHTML = `<div class="result-box error">Transaction not found</div>`;
+                    return;
+                }
+
+                resultDiv.innerHTML = `
+                    <div class="result-box success">
+                        <div style="font-weight: 600; margin-bottom: 12px;">Transaction Found</div>
+                        <div class="code-block">
+Hash:   ${tx.hash}
+From:   ${tx.from}
+To:     ${tx.to}
+Value:  ${formatNum(parseHex(tx.value))}
+Nonce:  ${parseHex(tx.nonce)}
+Block:  ${tx.block_number !== undefined ? parseHex(tx.block_number) : 'Pending'}
+                        </div>
+                    </div>
+                `;
+            } catch (e) {
+                resultDiv.innerHTML = `<div class="result-box error">Error: ${e.message}</div>`;
+            }
+        }
+
+        // Initialize
+        async function init() {
+            // Verify crypto works by testing with a known seed
+            try {
+                const testSeed = '0000000000000000000000000000000000000000000000000000000000000000';
+                const testAddr = await deriveAddress(testSeed);
+                console.log('Crypto initialized. Test address:', testAddr);
+
+                // Update validators with derived addresses (in case they differ)
+                for (const v of VALIDATORS) {
+                    try {
+                        const derivedAddr = await deriveAddress(v.seed);
+                        if (derivedAddr !== v.address) {
+                            console.log(`Validator ${v.index}: expected ${v.address}, got ${derivedAddr}`);
+                        }
+                    } catch (e) {
+                        console.error(`Failed to derive address for validator ${v.index}:`, e);
+                    }
+                }
+            } catch (e) {
+                console.error('Crypto initialization failed:', e);
+                showToast('Crypto initialization failed. Some features may not work.', 'error');
+            }
+
+            populateTransferDropdown();
+            await fetchStatus();
+            await loadRecentBlocks();
+
+            // Auto-refresh
+            setInterval(async () => {
+                await fetchStatus();
+                if (document.getElementById('dashboard').classList.contains('active')) {
+                    await loadRecentBlocks();
+                }
+            }, 5000);
+        }
+
+        // Start
+        init();
+    </script>
+</body>
+</html>

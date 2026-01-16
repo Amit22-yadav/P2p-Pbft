@@ -67,6 +67,16 @@ impl KeyPair {
     pub fn public_key_hex(&self) -> String {
         hex::encode(self.public_key_bytes())
     }
+
+    /// Get the private key (seed) bytes
+    pub fn private_key_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+
+    /// Get the private key (seed) as hex string
+    pub fn private_key_hex(&self) -> String {
+        hex::encode(self.private_key_bytes())
+    }
 }
 
 /// Verify a signature given public key bytes

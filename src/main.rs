@@ -493,19 +493,26 @@ async fn start_node(
 }
 
 fn keygen(seed: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
-    let keypair = if let Some(seed_hex) = seed {
+    let (keypair, provided_seed) = if let Some(seed_hex) = seed {
         let seed_bytes: [u8; 32] = hex::decode(&seed_hex)?
             .try_into()
             .map_err(|_| "Seed must be 32 bytes")?;
-        KeyPair::from_seed(&seed_bytes)
+        (KeyPair::from_seed(&seed_bytes), true)
     } else {
-        KeyPair::generate()
+        (KeyPair::generate(), false)
     };
 
     let address = public_key_to_address(&keypair.public_key_bytes());
+
+    println!("Private Key (Seed):   {}", keypair.private_key_hex());
     println!("Public Key (Node ID): {}", keypair.public_key_hex());
     println!("Address:              {}", address_to_hex(&address));
-    println!("\nThis is your node's identity in the network.");
+
+    if !provided_seed {
+        println!();
+        println!("IMPORTANT: Save your private key (seed) securely!");
+        println!("You will need it to sign transactions.");
+    }
 
     Ok(())
 }
@@ -666,11 +673,12 @@ async fn start_blockchain_node(
 
     let blockchain = Arc::new(RwLock::new(blockchain));
 
-    // Start RPC server
+    // Start RPC server with peer tracking
     let rpc_addr: SocketAddr = format!("0.0.0.0:{}", rpc_port).parse()?;
     let rpc_blockchain = blockchain.clone();
+    let rpc_peers = network.peers.clone();
     tokio::spawn(async move {
-        let server = RpcServer::new(rpc_blockchain, rpc_addr);
+        let server = RpcServer::with_peers(rpc_blockchain, rpc_addr, rpc_peers);
         server.start().await;
     });
 

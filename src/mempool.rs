@@ -308,6 +308,17 @@ impl Mempool {
             max_size: self.config.max_size,
         }
     }
+
+    /// Get all transactions in the mempool
+    pub fn get_all_transactions(&self) -> Vec<Transaction> {
+        let transactions = self.transactions.read();
+        let queue = self.queue.read();
+
+        queue
+            .iter()
+            .filter_map(|hash| transactions.get(hash).cloned())
+            .collect()
+    }
 }
 
 /// Mempool statistics

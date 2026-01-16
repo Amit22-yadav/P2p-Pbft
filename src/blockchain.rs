@@ -304,6 +304,11 @@ impl Blockchain {
         self.mempool.stats()
     }
 
+    /// Get mempool transactions
+    pub fn get_mempool_transactions(&self) -> Vec<Transaction> {
+        self.mempool.get_all_transactions()
+    }
+
     /// Get chain statistics
     pub fn chain_stats(&self) -> crate::chain::ChainStats {
         self.chain.stats()

@@ -77,6 +77,11 @@ impl Transaction {
             .unwrap()
             .as_millis() as u64;
 
+        Self::new_with_timestamp(from, nonce, payload, timestamp)
+    }
+
+    /// Create a new unsigned transaction with a specific timestamp
+    pub fn new_with_timestamp(from: Address, nonce: u64, payload: TransactionPayload, timestamp: u64) -> Self {
         let mut tx = Self {
             hash: [0u8; 32],
             from,

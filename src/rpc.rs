@@ -1,13 +1,18 @@
 use crate::blockchain::Blockchain;
 use crate::message::Hash;
 use crate::types::{address_from_hex, address_to_hex, hash_to_hex, Transaction, TransactionPayload};
+use parking_lot::RwLock as SyncRwLock;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info};
 use warp::Filter;
+
+/// Type alias for peer count provider
+pub type PeerCountFn = Arc<SyncRwLock<HashMap<String, crate::network::PeerHandle>>>;
 
 #[derive(Error, Debug)]
 pub enum RpcError {
@@ -84,6 +89,7 @@ pub struct SendTransactionParams {
     pub nonce: u64,
     pub data: Option<String>, // Hex encoded data
     pub signature: String,    // Hex encoded signature
+    pub timestamp: Option<u64>, // Optional timestamp (if provided, uses this instead of current time)
 }
 
 #[derive(Debug, Serialize)]
@@ -117,22 +123,48 @@ pub struct StatusResponse {
     pub chain_height: u64,
     pub is_primary: bool,
     pub mempool_size: usize,
+    pub connected_peers: usize,
 }
 
 /// RPC Server
 pub struct RpcServer {
     blockchain: Arc<RwLock<Blockchain>>,
     addr: SocketAddr,
+    peers: Option<PeerCountFn>,
 }
 
 impl RpcServer {
     pub fn new(blockchain: Arc<RwLock<Blockchain>>, addr: SocketAddr) -> Self {
-        Self { blockchain, addr }
+        Self {
+            blockchain,
+            addr,
+            peers: None,
+        }
+    }
+
+    /// Create RPC server with peer tracking
+    pub fn with_peers(
+        blockchain: Arc<RwLock<Blockchain>>,
+        addr: SocketAddr,
+        peers: PeerCountFn,
+    ) -> Self {
+        Self {
+            blockchain,
+            addr,
+            peers: Some(peers),
+        }
     }
 
     /// Start the RPC server
     pub async fn start(self) {
         let blockchain = self.blockchain.clone();
+        let peers = self.peers.clone();
+
+        // CORS configuration for frontend access
+        let cors = warp::cors()
+            .allow_any_origin()
+            .allow_methods(vec!["POST", "OPTIONS"])
+            .allow_headers(vec!["Content-Type"]);
 
         let rpc_route = warp::path("rpc")
             .or(warp::path::end())
@@ -140,7 +172,9 @@ impl RpcServer {
             .and(warp::post())
             .and(warp::body::json())
             .and(warp::any().map(move || blockchain.clone()))
-            .and_then(handle_rpc_request);
+            .and(warp::any().map(move || peers.clone()))
+            .and_then(handle_rpc_request)
+            .with(cors);
 
         info!("Starting JSON-RPC server on {}", self.addr);
 
@@ -151,6 +185,7 @@ impl RpcServer {
 async fn handle_rpc_request(
     request: JsonRpcRequest,
     blockchain: Arc<RwLock<Blockchain>>,
+    peers: Option<PeerCountFn>,
 ) -> Result<impl warp::Reply, warp::Rejection> {
     debug!("RPC request: method={}", request.method);
 
@@ -173,7 +208,7 @@ async fn handle_rpc_request(
         }
 
         // Custom methods
-        "pbft_getStatus" => handle_get_status(&blockchain).await,
+        "pbft_getStatus" => handle_get_status(&blockchain, &peers).await,
         "pbft_getMempool" => handle_get_mempool(&blockchain).await,
         "chain_submitTransaction" => {
             handle_submit_transaction(&blockchain, request.params.clone()).await
@@ -356,9 +391,15 @@ async fn handle_send_raw_transaction(
 
 async fn handle_get_status(
     blockchain: &Arc<RwLock<Blockchain>>,
+    peers: &Option<PeerCountFn>,
 ) -> Result<serde_json::Value, RpcError> {
     let bc = blockchain.read().await;
     let is_primary = bc.is_primary().await;
+
+    let connected_peers = peers
+        .as_ref()
+        .map(|p| p.read().len())
+        .unwrap_or(0);
 
     let status = StatusResponse {
         node_id: bc.node_id()[..16].to_string(),
@@ -366,6 +407,7 @@ async fn handle_get_status(
         chain_height: bc.height(),
         is_primary,
         mempool_size: bc.mempool_stats().total_transactions,
+        connected_peers,
     };
 
     Ok(serde_json::to_value(status).unwrap())
@@ -376,9 +418,28 @@ async fn handle_get_mempool(
 ) -> Result<serde_json::Value, RpcError> {
     let bc = blockchain.read().await;
     let stats = bc.mempool_stats();
+    let transactions = bc.get_mempool_transactions();
+
+    let tx_list: Vec<serde_json::Value> = transactions
+        .iter()
+        .map(|tx| {
+            let (to, value) = match &tx.payload {
+                TransactionPayload::Transfer { to, value } => (Some(address_to_hex(to)), *value),
+                _ => (None, 0),
+            };
+            serde_json::json!({
+                "hash": hash_to_hex(&tx.hash),
+                "from": address_to_hex(&tx.from),
+                "to": to,
+                "value": value,
+                "nonce": tx.nonce,
+            })
+        })
+        .collect();
 
     Ok(serde_json::json!({
-        "total_transactions": stats.total_transactions,
+        "total": stats.total_transactions,
+        "transactions": tx_list,
         "unique_senders": stats.unique_senders,
         "max_size": stats.max_size,
     }))
@@ -420,8 +481,12 @@ async fn handle_submit_transaction(
     let signature = hex::decode(tx_params.signature.strip_prefix("0x").unwrap_or(&tx_params.signature))
         .map_err(|e| RpcError::InvalidParams(e.to_string()))?;
 
-    // Create transaction
-    let mut tx = Transaction::new(from, tx_params.nonce, payload);
+    // Create transaction (use provided timestamp if available for proper signature verification)
+    let mut tx = if let Some(timestamp) = tx_params.timestamp {
+        Transaction::new_with_timestamp(from, tx_params.nonce, payload, timestamp)
+    } else {
+        Transaction::new(from, tx_params.nonce, payload)
+    };
     tx.signature = signature;
 
     let bc = blockchain.read().await;

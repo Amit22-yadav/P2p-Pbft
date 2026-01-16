@@ -35,6 +35,15 @@ pub struct PeerInfo {
 pub struct PeerHandle {
     pub info: PeerInfo,
     sender: mpsc::Sender<NetworkMessage>,
+    /// Unique connection ID to identify this specific connection
+    connection_id: u64,
+}
+
+use std::sync::atomic::{AtomicU64, Ordering};
+static CONNECTION_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+fn next_connection_id() -> u64 {
+    CONNECTION_COUNTER.fetch_add(1, Ordering::SeqCst)
 }
 
 impl PeerHandle {
@@ -129,7 +138,7 @@ impl Network {
 
     /// Connect to a peer
     pub async fn connect_to_peer(&self, address: &str) -> Result<NodeId, NetworkError> {
-        info!("Connecting to peer at {}", address);
+        debug!("Connecting to peer at {}", address);
         let stream = TcpStream::connect(address)
             .await
             .map_err(|_| NetworkError::ConnectionFailed(address.to_string()))?;
@@ -159,8 +168,15 @@ impl Network {
             }
         };
 
+        // Check if we already have this peer (prevents duplicate connections)
+        if self.peers.read().contains_key(&peer_id) {
+            debug!("Already connected to peer {}, dropping duplicate connection", &peer_id[..16]);
+            return Ok(peer_id);
+        }
+
         // Create peer handle
         let (tx, rx) = mpsc::channel(100);
+        let conn_id = next_connection_id();
         let peer_handle = PeerHandle {
             info: PeerInfo {
                 node_id: peer_id.clone(),
@@ -168,10 +184,18 @@ impl Network {
                 connected: true,
             },
             sender: tx,
+            connection_id: conn_id,
         };
 
-        // Store peer
-        self.peers.write().insert(peer_id.clone(), peer_handle);
+        // Store peer (use entry API to avoid race condition)
+        {
+            let mut peers = self.peers.write();
+            if peers.contains_key(&peer_id) {
+                debug!("Already connected to peer {} (race), dropping duplicate", &peer_id[..16]);
+                return Ok(peer_id);
+            }
+            peers.insert(peer_id.clone(), peer_handle);
+        }
 
         // Log connection with peer count
         let peer_count = self.peers.read().len();
@@ -187,14 +211,21 @@ impl Network {
             peer_writer(write_half, rx).await;
         });
 
-        // Reader task
+        // Reader task - only remove peer if connection_id matches
         tokio::spawn(async move {
             if let Err(e) = peer_reader(read_half, peer_id_clone.clone(), message_tx).await {
                 debug!("Peer {} reader ended: {}", peer_id_clone, e);
             }
-            let remaining = peers.read().len().saturating_sub(1);
-            peers.write().remove(&peer_id_clone);
-            info!("✗ Peer disconnected: {}... [Remaining peers: {}]", &peer_id_clone[..16], remaining);
+            // Only remove if this connection is still the active one
+            let mut peers_guard = peers.write();
+            if let Some(handle) = peers_guard.get(&peer_id_clone) {
+                if handle.connection_id == conn_id {
+                    peers_guard.remove(&peer_id_clone);
+                    let remaining = peers_guard.len();
+                    drop(peers_guard);
+                    info!("✗ Peer disconnected: {}... [Remaining peers: {}]", &peer_id_clone[..16], remaining);
+                }
+            }
         });
 
         // Try to connect to discovered peers to form a mesh network
@@ -263,7 +294,7 @@ pub struct NetworkHandle {
 
 impl NetworkHandle {
     pub async fn connect_to_peer(&self, address: &str) -> Result<NodeId, NetworkError> {
-        info!("Connecting to peer at {}", address);
+        debug!("Connecting to peer at {}", address);
         let stream = TcpStream::connect(address)
             .await
             .map_err(|_| NetworkError::ConnectionFailed(address.to_string()))?;
@@ -293,10 +324,15 @@ impl NetworkHandle {
             }
         };
 
-        info!("Connected to peer {} at {}", peer_id, address);
+        // Check if we already have this peer
+        if self.peers.read().contains_key(&peer_id) {
+            debug!("Already connected to peer {}, dropping duplicate", &peer_id[..16]);
+            return Ok(peer_id);
+        }
 
         // Create peer handle
         let (tx, rx) = mpsc::channel(100);
+        let conn_id = next_connection_id();
         let peer_handle = PeerHandle {
             info: PeerInfo {
                 node_id: peer_id.clone(),
@@ -304,10 +340,20 @@ impl NetworkHandle {
                 connected: true,
             },
             sender: tx,
+            connection_id: conn_id,
         };
 
-        // Store peer
-        self.peers.write().insert(peer_id.clone(), peer_handle);
+        // Store peer (check again to avoid race)
+        {
+            let mut peers_guard = self.peers.write();
+            if peers_guard.contains_key(&peer_id) {
+                debug!("Already connected to peer {} (race), dropping duplicate", &peer_id[..16]);
+                return Ok(peer_id);
+            }
+            peers_guard.insert(peer_id.clone(), peer_handle);
+        }
+
+        info!("✓ Peer connected: {}... at {} [Total peers: {}]", &peer_id[..16], address, self.peers.read().len());
 
         // Spawn reader and writer tasks
         let message_tx = self.message_tx.clone();
@@ -319,13 +365,21 @@ impl NetworkHandle {
             peer_writer(write_half, rx).await;
         });
 
-        // Reader task
+        // Reader task - only remove if connection_id matches
         tokio::spawn(async move {
             if let Err(e) = peer_reader(read_half, peer_id_clone.clone(), message_tx).await {
                 debug!("Peer {} reader ended: {}", peer_id_clone, e);
             }
-            peers.write().remove(&peer_id_clone);
-            info!("Peer {} disconnected", peer_id_clone);
+            // Only remove if this connection is still the active one
+            let mut peers_guard = peers.write();
+            if let Some(handle) = peers_guard.get(&peer_id_clone) {
+                if handle.connection_id == conn_id {
+                    peers_guard.remove(&peer_id_clone);
+                    let remaining = peers_guard.len();
+                    drop(peers_guard);
+                    info!("✗ Peer disconnected: {}... [Remaining peers: {}]", &peer_id_clone[..16], remaining);
+                }
+            }
         });
 
         Ok(peer_id)
@@ -372,6 +426,25 @@ async fn handle_incoming_connection(
         }
     };
 
+    // Check if we already have this peer (prevents duplicate connections)
+    // Use deterministic tie-breaking: lower node ID wins to keep connection
+    let already_connected = peers.read().contains_key(&peer_id);
+    if already_connected {
+        debug!("Already connected to peer {}, dropping incoming duplicate", &peer_id[..16]);
+        // Still send ack so the other side completes handshake cleanly
+        let known_peers: Vec<(NodeId, String)> = peers
+            .read()
+            .values()
+            .map(|p| (p.info.node_id.clone(), p.info.address.clone()))
+            .collect();
+        let ack = NetworkMessage::HandshakeAck {
+            node_id: our_node_id,
+            known_peers,
+        };
+        let _ = send_message(&mut write_half, &ack).await;
+        return Ok(());
+    }
+
     // Send handshake ack with known peers
     let known_peers: Vec<(NodeId, String)> = peers
         .read()
@@ -387,6 +460,7 @@ async fn handle_incoming_connection(
 
     // Create peer handle
     let (tx, rx) = mpsc::channel(100);
+    let conn_id = next_connection_id();
     let peer_address = address
         .split(':')
         .next()
@@ -400,10 +474,18 @@ async fn handle_incoming_connection(
             connected: true,
         },
         sender: tx,
+        connection_id: conn_id,
     };
 
-    // Store peer
-    peers.write().insert(peer_id.clone(), peer_handle);
+    // Store peer (check again to avoid race condition)
+    {
+        let mut peers_guard = peers.write();
+        if peers_guard.contains_key(&peer_id) {
+            debug!("Already connected to peer {} (race), dropping incoming duplicate", &peer_id[..16]);
+            return Ok(());
+        }
+        peers_guard.insert(peer_id.clone(), peer_handle);
+    }
 
     // Log connection with peer count
     let peer_count = peers.read().len();
@@ -419,9 +501,16 @@ async fn handle_incoming_connection(
     if let Err(e) = peer_reader(read_half, peer_id.clone(), message_tx).await {
         debug!("Peer {} reader ended: {}", peer_id, e);
     }
-    let remaining = peers.read().len().saturating_sub(1);
-    peers.write().remove(&peer_id_clone);
-    info!("✗ Peer disconnected: {}... [Remaining peers: {}]", &peer_id_clone[..16], remaining);
+    // Only remove if this connection is still the active one
+    let mut peers_guard = peers.write();
+    if let Some(handle) = peers_guard.get(&peer_id_clone) {
+        if handle.connection_id == conn_id {
+            peers_guard.remove(&peer_id_clone);
+            let remaining = peers_guard.len();
+            drop(peers_guard);
+            info!("✗ Peer disconnected: {}... [Remaining peers: {}]", &peer_id_clone[..16], remaining);
+        }
+    }
 
     Ok(())
 }

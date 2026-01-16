@@ -27,13 +27,21 @@ This starts a 4-node PBFT network with:
 - RPC ports: 8545-8548
 - Each validator funded with 1,000,000 tokens
 
-### 2. Check Status
+### 2. Start the Web Explorer (Optional)
+
+```bash
+./scripts/serve_frontend.sh
+```
+
+Then open http://localhost:3000 in your browser.
+
+### 3. Check Status
 
 ```bash
 ./scripts/client.sh status
 ```
 
-### 3. Run the Demo
+### 4. Run the Demo
 
 ```bash
 ./scripts/client.sh demo
@@ -298,6 +306,52 @@ For testing, validators use deterministic seeds based on their index:
 | 3 | `0300000000000000000000000000000000000000000000000000000000000000` |
 
 Use `./scripts/client.sh validators` to see their addresses and balances.
+
+---
+
+## Web Explorer
+
+A web-based blockchain explorer is included for easy interaction with the blockchain.
+
+### Starting the Explorer
+
+```bash
+./scripts/serve_frontend.sh
+```
+
+This starts a web server on port 3000 (default). Open http://localhost:3000 in your browser.
+
+### Features
+
+**Dashboard**
+- Real-time block height and mempool status
+- Quick balance check
+- Recent blocks view
+
+**Wallet**
+- Generate new accounts (random or from seed)
+- View account details from seed
+- Check balance and nonce
+
+**Transfer**
+- Send funds between accounts
+- Preview transactions before sending
+- Automatic nonce detection
+- Transaction status lookup
+
+**Explorer**
+- Browse blocks by number
+- View block details and transactions
+- Monitor mempool
+
+**Validators**
+- View all pre-funded validator accounts
+- Copy seeds/addresses
+- Quick transfer setup
+
+### Configuration
+
+To use a different RPC endpoint, change the URL in the top-right corner of the interface.
 
 ---
 

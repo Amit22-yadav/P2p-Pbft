@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Data and logs (will be mounted as volumes)
+data/
+logs/
+*.log
+
+# Docker files (no need to copy these into the image)
+docker-compose*.yml
+.dockerignore
+
+# Documentation
+*.md
+LICENSE
+
+# Test files
+tests/

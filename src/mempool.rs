@@ -147,14 +147,52 @@ impl Mempool {
     }
 
     /// Add a transaction with validation
+    ///
+    /// This validates the transaction against both the confirmed blockchain state
+    /// and the pending mempool state. Nonces are validated against the pending
+    /// nonce (which may be higher than the confirmed nonce if there are pending
+    /// transactions from the same sender).
     pub fn add_with_validation(
         &self,
         tx: Transaction,
         execution_engine: &ExecutionEngine,
         account_manager: &AccountManager,
     ) -> Result<(), MempoolError> {
-        // Validate transaction
-        if let Err(e) = execution_engine.validate_transaction(&tx, account_manager) {
+        // Get the confirmed nonce from blockchain state
+        let confirmed_nonce = account_manager.get_nonce(&tx.from).unwrap_or(0);
+
+        // Get the pending nonce (next expected nonce considering mempool txs)
+        let expected_nonce = {
+            let pending_nonces = self.pending_nonces.read();
+            pending_nonces.get(&tx.from).copied().unwrap_or(confirmed_nonce)
+        };
+
+        // Validate nonce against pending state
+        if tx.nonce < confirmed_nonce {
+            debug!(
+                tx_hash = %hash_to_hex(&tx.hash),
+                from = %address_to_hex(&tx.from),
+                tx_nonce = tx.nonce,
+                confirmed_nonce = confirmed_nonce,
+                "Transaction nonce too low (already confirmed)"
+            );
+            return Err(MempoolError::NonceTooLow);
+        }
+
+        if tx.nonce > expected_nonce {
+            debug!(
+                tx_hash = %hash_to_hex(&tx.hash),
+                from = %address_to_hex(&tx.from),
+                tx_nonce = tx.nonce,
+                expected_nonce = expected_nonce,
+                "Transaction nonce gap (missing intermediate transactions)"
+            );
+            return Err(MempoolError::NonceGap);
+        }
+
+        // Validate other aspects (signature, balance, payload constraints)
+        // Skip nonce check in execution engine since we already validated it
+        if let Err(e) = execution_engine.validate_transaction_skip_nonce(&tx, account_manager) {
             debug!(
                 tx_hash = %hash_to_hex(&tx.hash),
                 from = %address_to_hex(&tx.from),

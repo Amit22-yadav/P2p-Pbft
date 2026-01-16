@@ -119,6 +119,41 @@ impl ExecutionEngine {
         }
 
         // Validate payload-specific constraints
+        self.validate_payload(tx, account_manager)?;
+
+        Ok(())
+    }
+
+    /// Validate a transaction without checking the nonce
+    /// Used by mempool when it handles nonce validation itself (considering pending txs)
+    pub fn validate_transaction_skip_nonce(
+        &self,
+        tx: &Transaction,
+        account_manager: &AccountManager,
+    ) -> Result<(), ExecutionError> {
+        // Check transaction size
+        let tx_size = bincode::serialize(tx).map_err(|_| ExecutionError::InvalidFormat)?.len();
+        if tx_size > self.config.max_tx_size {
+            return Err(ExecutionError::TransactionTooLarge);
+        }
+
+        // Verify signature
+        self.verify_signature(tx)?;
+
+        // Skip nonce check - mempool handles this with pending nonce tracking
+
+        // Validate payload-specific constraints
+        self.validate_payload(tx, account_manager)?;
+
+        Ok(())
+    }
+
+    /// Validate payload-specific constraints
+    fn validate_payload(
+        &self,
+        tx: &Transaction,
+        account_manager: &AccountManager,
+    ) -> Result<(), ExecutionError> {
         match &tx.payload {
             TransactionPayload::Transfer { value, .. } => {
                 let balance = account_manager.get_balance(&tx.from)?;
@@ -143,7 +178,6 @@ impl ExecutionEngine {
                 }
             }
         }
-
         Ok(())
     }
 

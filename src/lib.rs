@@ -35,4 +35,4 @@ pub use crypto::KeyPair;
 pub use message::{ConsensusMessage, NetworkMessage, Request};
 pub use network::{Network, NetworkError, PeerInfo};
 pub use node::{Node, NodeBuilder};
-pub use pbft::{PbftConfig, PbftConsensus, PbftError, PbftState};
+pub use pbft::{OutgoingMessage, PbftConfig, PbftConsensus, PbftError, PbftState};

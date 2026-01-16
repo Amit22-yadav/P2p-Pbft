@@ -194,14 +194,22 @@ impl Network {
             info!("Peer {} disconnected", peer_id_clone);
         });
 
-        // Try to connect to discovered peers
-        for (_, addr) in known_peers {
-            if !self.peers.read().contains_key(&peer_id) {
-                let self_clone = self.clone_handle();
-                tokio::spawn(async move {
-                    let _ = self_clone.connect_to_peer(&addr).await;
-                });
+        // Try to connect to discovered peers to form a mesh network
+        for (discovered_peer_id, addr) in known_peers {
+            // Skip if we already have this peer or if it's ourselves
+            if discovered_peer_id == self.node_id {
+                continue;
             }
+            if self.peers.read().contains_key(&discovered_peer_id) {
+                continue;
+            }
+            info!("Discovered new peer {} at {}, connecting...", &discovered_peer_id[..16], addr);
+            let self_clone = self.clone_handle();
+            tokio::spawn(async move {
+                if let Err(e) = self_clone.connect_to_peer(&addr).await {
+                    debug!("Failed to connect to discovered peer: {}", e);
+                }
+            });
         }
 
         Ok(peer_id)
@@ -341,7 +349,7 @@ async fn handle_incoming_connection(
     peers: Arc<RwLock<HashMap<NodeId, PeerHandle>>>,
     message_tx: mpsc::Sender<(NodeId, NetworkMessage)>,
     our_node_id: NodeId,
-    our_listen_port: u16,
+    _our_listen_port: u16,
 ) -> Result<(), NetworkError> {
     let (read_half, mut write_half) = stream.into_split();
     let mut read_half = tokio::io::BufReader::new(read_half);
@@ -453,6 +461,9 @@ async fn send_message<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+/// Maximum message size (16 MB) to prevent OOM attacks
+const MAX_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 /// Receive a message from a stream
 async fn receive_message<R: AsyncReadExt + Unpin>(
     reader: &mut R,
@@ -460,6 +471,14 @@ async fn receive_message<R: AsyncReadExt + Unpin>(
     let mut len_buf = [0u8; 4];
     reader.read_exact(&mut len_buf).await?;
     let len = u32::from_le_bytes(len_buf) as usize;
+
+    // Check message size to prevent OOM attacks
+    if len > MAX_MESSAGE_SIZE {
+        return Err(NetworkError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Message size {} exceeds maximum {}", len, MAX_MESSAGE_SIZE),
+        )));
+    }
 
     let mut data = vec![0u8; len];
     reader.read_exact(&mut data).await?;

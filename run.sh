@@ -83,6 +83,9 @@ start_network_terminals() {
         build_project
     fi
 
+    # Create logs directory
+    mkdir -p logs
+
     # Detect OS and open terminals accordingly
     if [[ "$OSTYPE" == "darwin"* ]]; then
         # macOS - use Terminal.app or iTerm
@@ -93,7 +96,7 @@ start_network_terminals() {
                 bootstrap="-b 127.0.0.1:8000"
             fi
 
-            osascript -e "tell application \"Terminal\" to do script \"cd '$PROJECT_DIR' && ./target/release/p2p-pbft start -p $port -i $i -n 4 $bootstrap\""
+            osascript -e "tell application \"Terminal\" to do script \"cd '$PROJECT_DIR' && ./target/release/p2p-pbft start -p $port -i $i -n 4 $bootstrap 2>&1 | tee '$PROJECT_DIR/logs/node$i.log'\""
 
             # Small delay to ensure node 0 starts first
             if [ $i -eq 0 ]; then
@@ -104,6 +107,7 @@ start_network_terminals() {
         done
 
         echo -e "${GREEN}Network started in 4 Terminal windows${NC}"
+        echo -e "Logs are being saved to: ${YELLOW}logs/${NC}"
 
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
         # Linux - try gnome-terminal, xterm, or konsole
@@ -115,7 +119,7 @@ start_network_terminals() {
                     bootstrap="-b 127.0.0.1:8000"
                 fi
 
-                gnome-terminal -- bash -c "cd '$PROJECT_DIR' && ./target/release/p2p-pbft start -p $port -i $i -n 4 $bootstrap; exec bash"
+                gnome-terminal -- bash -c "cd '$PROJECT_DIR' && ./target/release/p2p-pbft start -p $port -i $i -n 4 $bootstrap 2>&1 | tee '$PROJECT_DIR/logs/node$i.log'; exec bash"
 
                 if [ $i -eq 0 ]; then
                     sleep 2
@@ -131,7 +135,7 @@ start_network_terminals() {
                     bootstrap="-b 127.0.0.1:8000"
                 fi
 
-                xterm -hold -e "cd '$PROJECT_DIR' && ./target/release/p2p-pbft start -p $port -i $i -n 4 $bootstrap" &
+                xterm -hold -e "cd '$PROJECT_DIR' && ./target/release/p2p-pbft start -p $port -i $i -n 4 $bootstrap 2>&1 | tee '$PROJECT_DIR/logs/node$i.log'" &
 
                 if [ $i -eq 0 ]; then
                     sleep 2
@@ -145,6 +149,7 @@ start_network_terminals() {
         fi
 
         echo -e "${GREEN}Network started in separate terminal windows${NC}"
+        echo -e "Logs are being saved to: ${YELLOW}logs/${NC}"
     else
         echo -e "${YELLOW}Unsupported OS for terminal mode. Using background mode...${NC}"
         start_network_background

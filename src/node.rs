@@ -1,7 +1,7 @@
 use crate::crypto::KeyPair;
-use crate::message::{ConsensusMessage, NetworkMessage, NodeId, Request};
+use crate::message::{NetworkMessage, NodeId, Request};
 use crate::network::Network;
-use crate::pbft::{PbftConfig, PbftConsensus, PbftState};
+use crate::pbft::{OutgoingMessage, PbftConfig, PbftConsensus, PbftState};
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
@@ -11,7 +11,7 @@ pub struct Node {
     pub node_id: NodeId,
     network: Network,
     consensus: Option<PbftConsensus>,
-    outgoing_rx: mpsc::Receiver<NetworkMessage>,
+    outgoing_rx: mpsc::Receiver<OutgoingMessage>,
     committed_rx: mpsc::Receiver<Request>,
 }
 
@@ -93,11 +93,27 @@ impl Node {
         let mut outgoing_rx = std::mem::replace(&mut self.outgoing_rx, mpsc::channel(1).1);
 
         tokio::spawn(async move {
-            while let Some(msg) = outgoing_rx.recv().await {
-                let peers: Vec<_> = network_peers.read().values().cloned().collect();
-                for peer in peers {
-                    if let Err(e) = peer.send(msg.clone()).await {
-                        warn!("Failed to send to {}: {}", peer.info.node_id, e);
+            while let Some(outgoing) = outgoing_rx.recv().await {
+                match outgoing {
+                    OutgoingMessage::Broadcast(msg) => {
+                        // Send to all peers
+                        let peers: Vec<_> = network_peers.read().values().cloned().collect();
+                        for peer in peers {
+                            if let Err(e) = peer.send(msg.clone()).await {
+                                warn!("Failed to send to {}: {}", peer.info.node_id, e);
+                            }
+                        }
+                    }
+                    OutgoingMessage::SendTo { target, message } => {
+                        // Send to specific peer only
+                        let peer = network_peers.read().get(&target).cloned();
+                        if let Some(peer) = peer {
+                            if let Err(e) = peer.send(message).await {
+                                warn!("Failed to send to {}: {}", target, e);
+                            }
+                        } else {
+                            warn!("Target peer {} not found for targeted send", target);
+                        }
                     }
                 }
             }

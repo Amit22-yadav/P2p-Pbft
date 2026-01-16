@@ -1,7 +1,7 @@
-use crate::crypto::KeyPair;
+use crate::crypto::{verify_signature, KeyPair};
 use crate::message::{
     Checkpoint, Commit, ConsensusMessage, Hash, NetworkMessage, NewView, NodeId, PrePrepare,
-    Prepare, Reply, Request, SequenceNumber, ViewChange, ViewNumber,
+    Prepare, Request, SequenceNumber, ViewChange, ViewNumber,
 };
 use parking_lot::RwLock;
 use std::collections::{HashMap, HashSet};
@@ -10,6 +10,19 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, info, warn};
+
+/// Convert a hex-encoded node ID to public key bytes
+fn node_id_to_public_key(node_id: &str) -> Option<Vec<u8>> {
+    hex::decode(node_id).ok()
+}
+
+/// Verify a signature from a node
+fn verify_node_signature(node_id: &str, message: &[u8], signature: &[u8]) -> bool {
+    match node_id_to_public_key(node_id) {
+        Some(pk) => verify_signature(&pk, message, signature).is_ok(),
+        None => false,
+    }
+}
 
 #[derive(Error, Debug)]
 pub enum PbftError {
@@ -25,6 +38,15 @@ pub enum PbftError {
     NotPrimary,
     #[error("Duplicate message")]
     DuplicateMessage,
+}
+
+/// Outgoing message wrapper that supports both broadcast and targeted sends
+#[derive(Debug, Clone)]
+pub enum OutgoingMessage {
+    /// Broadcast to all peers
+    Broadcast(NetworkMessage),
+    /// Send to a specific peer
+    SendTo { target: NodeId, message: NetworkMessage },
 }
 
 /// PBFT consensus phase
@@ -179,14 +201,14 @@ impl PbftState {
 /// PBFT consensus engine
 pub struct PbftConsensus {
     state: Arc<RwLock<PbftState>>,
-    outgoing_tx: mpsc::Sender<NetworkMessage>,
+    outgoing_tx: mpsc::Sender<OutgoingMessage>,
     committed_tx: mpsc::Sender<Request>,
 }
 
 impl PbftConsensus {
     pub fn new(
         state: PbftState,
-        outgoing_tx: mpsc::Sender<NetworkMessage>,
+        outgoing_tx: mpsc::Sender<OutgoingMessage>,
         committed_tx: mpsc::Sender<Request>,
     ) -> Self {
         Self {
@@ -206,9 +228,14 @@ impl PbftConsensus {
         let mut state = self.state.write();
 
         if !state.is_primary() {
-            // Forward to primary
+            // Forward to primary only (not broadcast)
+            let primary = state.primary().clone();
+            drop(state);
             let msg = NetworkMessage::Consensus(ConsensusMessage::Request(request));
-            let _ = self.outgoing_tx.send(msg).await;
+            let _ = self.outgoing_tx.send(OutgoingMessage::SendTo {
+                target: primary,
+                message: msg
+            }).await;
             return Ok(());
         }
 
@@ -247,17 +274,38 @@ impl PbftConsensus {
             signature,
         };
 
+        // Create our own prepare message (primary also participates in prepare phase)
+        let prepare_sign_data = format!("{}-{}-{:?}", view, sequence, digest);
+        let prepare_signature = state.sign(prepare_sign_data.as_bytes());
+        let prepare = Prepare {
+            view,
+            sequence,
+            digest,
+            replica_id: state.node_id.clone(),
+            signature: prepare_signature,
+        };
+
         // Update local state
+        let node_id = state.node_id.clone();
         let instance = state.get_or_create_instance(sequence);
         instance.request = Some(request);
         instance.digest = Some(digest);
         instance.pre_prepare = Some(pre_prepare.clone());
         instance.phase = Phase::PrePrepared;
+        // Primary adds its own prepare
+        instance.prepares.insert(node_id, prepare.clone());
 
         // Broadcast pre-prepare
         drop(state);
         let msg = NetworkMessage::Consensus(ConsensusMessage::PrePrepare(pre_prepare));
-        let _ = self.outgoing_tx.send(msg).await;
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
+
+        // Also broadcast our prepare message
+        let prepare_msg = NetworkMessage::Consensus(ConsensusMessage::Prepare(prepare));
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(prepare_msg)).await;
+
+        // Try to advance (in case we already have enough prepares)
+        self.try_advance_to_prepared(sequence).await?;
 
         Ok(())
     }
@@ -282,6 +330,20 @@ impl PbftConsensus {
                 || pre_prepare.sequence > state.high_watermark
             {
                 return Err(PbftError::InvalidSequence);
+            }
+
+            // Verify signature
+            let sign_data = format!(
+                "{}-{}-{:?}",
+                pre_prepare.view, pre_prepare.sequence, pre_prepare.digest
+            );
+            if !verify_node_signature(
+                &pre_prepare.primary_id,
+                sign_data.as_bytes(),
+                &pre_prepare.signature,
+            ) {
+                warn!("Invalid signature on PrePrepare from {}", pre_prepare.primary_id);
+                return Err(PbftError::InvalidSignature);
             }
 
             // Check for conflicting pre-prepare
@@ -337,7 +399,7 @@ impl PbftConsensus {
         };
 
         let msg = NetworkMessage::Consensus(ConsensusMessage::Prepare(prepare.clone()));
-        let _ = self.outgoing_tx.send(msg).await;
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
 
         // Check if we have enough prepares
         self.try_advance_to_prepared(prepare.sequence).await?;
@@ -358,6 +420,20 @@ impl PbftConsensus {
             // Validate sequence
             if prepare.sequence <= state.low_watermark || prepare.sequence > state.high_watermark {
                 return Err(PbftError::InvalidSequence);
+            }
+
+            // Verify signature
+            let sign_data = format!(
+                "{}-{}-{:?}",
+                prepare.view, prepare.sequence, prepare.digest
+            );
+            if !verify_node_signature(
+                &prepare.replica_id,
+                sign_data.as_bytes(),
+                &prepare.signature,
+            ) {
+                warn!("Invalid signature on Prepare from {}", prepare.replica_id);
+                return Err(PbftError::InvalidSignature);
             }
 
             let sequence = prepare.sequence;
@@ -444,7 +520,7 @@ impl PbftConsensus {
         };
 
         let msg = NetworkMessage::Consensus(ConsensusMessage::Commit(commit));
-        let _ = self.outgoing_tx.send(msg).await;
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
 
         // Check if we have enough commits
         self.try_advance_to_committed(sequence).await?;
@@ -467,17 +543,42 @@ impl PbftConsensus {
                 return Err(PbftError::InvalidSequence);
             }
 
+            // Verify signature
+            let sign_data = format!(
+                "{}-{}-{:?}-commit",
+                commit.view, commit.sequence, commit.digest
+            );
+            if !verify_node_signature(
+                &commit.replica_id,
+                sign_data.as_bytes(),
+                &commit.signature,
+            ) {
+                warn!("Invalid signature on Commit from {}", commit.replica_id);
+                return Err(PbftError::InvalidSignature);
+            }
+
             let sequence = commit.sequence;
             let instance = state.get_or_create_instance(sequence);
+
+            // Validate digest matches the instance's digest (if we have one)
+            if let Some(instance_digest) = instance.digest {
+                if commit.digest != instance_digest {
+                    warn!(
+                        "Commit digest mismatch from {}: expected {:?}, got {:?}",
+                        commit.replica_id, instance_digest, commit.digest
+                    );
+                    return Err(PbftError::InvalidMessage);
+                }
+            }
 
             // Check for duplicate
             if instance.commits.contains_key(&commit.replica_id) {
                 return Ok(());
             }
 
-            debug!(
-                "Received Commit for sequence {} from {}",
-                commit.sequence, commit.replica_id
+            info!(
+                "Received Commit for sequence {} from {}, total commits: {}",
+                commit.sequence, commit.replica_id, instance.commits.len() + 1
             );
 
             // Add commit
@@ -505,10 +606,18 @@ impl PbftConsensus {
 
             // Need prepared state and quorum of commits
             if instance.phase != Phase::Prepared {
+                debug!(
+                    "try_advance_to_committed: phase is {:?}, not Prepared",
+                    instance.phase
+                );
                 return Ok(());
             }
 
             if instance.commits.len() < quorum {
+                debug!(
+                    "try_advance_to_committed: commits {} < quorum {}",
+                    instance.commits.len(), quorum
+                );
                 return Ok(());
             }
 
@@ -573,7 +682,7 @@ impl PbftConsensus {
         };
 
         let msg = NetworkMessage::Consensus(ConsensusMessage::Checkpoint(checkpoint));
-        let _ = self.outgoing_tx.send(msg).await;
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
 
         Ok(())
     }
@@ -672,7 +781,7 @@ impl PbftConsensus {
 
         if let Some(new_view_msg) = new_view_msg {
             let msg = NetworkMessage::Consensus(ConsensusMessage::NewView(new_view_msg));
-            let _ = self.outgoing_tx.send(msg).await;
+            let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
         }
 
         Ok(())
@@ -736,7 +845,7 @@ impl PbftConsensus {
         };
 
         let msg = NetworkMessage::Consensus(ConsensusMessage::ViewChange(view_change));
-        let _ = self.outgoing_tx.send(msg).await;
+        let _ = self.outgoing_tx.send(OutgoingMessage::Broadcast(msg)).await;
     }
 
     /// Check view change timeout

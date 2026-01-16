@@ -2,11 +2,11 @@ use clap::{Parser, Subcommand};
 use p2p_pbft::crypto::KeyPair;
 use p2p_pbft::message::{ConsensusMessage, NetworkMessage, Request};
 use p2p_pbft::network::Network;
-use p2p_pbft::pbft::{PbftConfig, PbftConsensus, PbftState};
+use p2p_pbft::pbft::{OutgoingMessage, PbftConfig, PbftConsensus, PbftState};
 use std::io::{self, BufRead, Write};
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn, Level};
+use tracing::{info, warn, Level};
 use tracing_subscriber::FmtSubscriber;
 
 #[derive(Parser)]
@@ -149,7 +149,7 @@ async fn start_node(
         config.quorum()
     );
 
-    let (outgoing_tx, mut outgoing_rx) = mpsc::channel(1000);
+    let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<OutgoingMessage>(1000);
     let (committed_tx, mut committed_rx) = mpsc::channel(1000);
 
     let state = PbftState::new(node_id.clone(), keypair, replicas, config);
@@ -163,11 +163,34 @@ async fn start_node(
     // Spawn outgoing message handler
     let network_clone = network.peers.clone();
     tokio::spawn(async move {
-        while let Some(msg) = outgoing_rx.recv().await {
-            let peers: Vec<_> = network_clone.read().values().cloned().collect();
-            for peer in peers {
-                if let Err(e) = peer.send(msg.clone()).await {
-                    warn!("Failed to send to {}: {}", peer.info.node_id, e);
+        while let Some(outgoing) = outgoing_rx.recv().await {
+            match outgoing {
+                OutgoingMessage::Broadcast(msg) => {
+                    // Send to all peers
+                    let peers: Vec<_> = network_clone.read().values().cloned().collect();
+                    let msg_type = match &msg {
+                        NetworkMessage::Consensus(ConsensusMessage::PrePrepare(_)) => "PrePrepare",
+                        NetworkMessage::Consensus(ConsensusMessage::Prepare(_)) => "Prepare",
+                        NetworkMessage::Consensus(ConsensusMessage::Commit(_)) => "Commit",
+                        _ => "Other",
+                    };
+                    info!("Broadcasting {} to {} peers", msg_type, peers.len());
+                    for peer in peers {
+                        if let Err(e) = peer.send(msg.clone()).await {
+                            warn!("Failed to send to {}: {}", peer.info.node_id, e);
+                        }
+                    }
+                }
+                OutgoingMessage::SendTo { target, message } => {
+                    // Send to specific peer only
+                    let peer = network_clone.read().get(&target).cloned();
+                    if let Some(peer) = peer {
+                        if let Err(e) = peer.send(message).await {
+                            warn!("Failed to send to {}: {}", target, e);
+                        }
+                    } else {
+                        warn!("Target peer {} not found for targeted send", target);
+                    }
                 }
             }
         }
@@ -183,6 +206,9 @@ async fn start_node(
             );
         }
     });
+
+    // Create channel for CLI to submit requests
+    let (cli_request_tx, mut cli_request_rx) = mpsc::channel::<Request>(100);
 
     // Spawn view change timeout checker
     let consensus_state = consensus.state().clone();
@@ -233,17 +259,25 @@ async fn start_node(
                     }
                     let data = parts[1].as_bytes().to_vec();
                     let request = Request::new(node_id_for_cli.clone(), data);
-                    let state = consensus_for_cli.read();
-                    let is_primary = state.is_primary();
-                    drop(state);
+
+                    // Check if primary (in a block to ensure lock is dropped)
+                    let is_primary = {
+                        let state = consensus_for_cli.read();
+                        state.is_primary()
+                    };
 
                     if is_primary {
-                        info!("Submitting request as primary...");
+                        println!("Submitting request as primary...");
                     } else {
-                        info!("Forwarding request to primary...");
+                        println!("Forwarding request to primary...");
                     }
-                    // Note: In a full implementation, we'd call consensus.handle_request here
-                    println!("Request submitted: {:?}", parts[1]);
+
+                    // Send request through channel to main loop
+                    if let Err(e) = cli_request_tx.send(request).await {
+                        println!("Failed to submit request: {}", e);
+                    } else {
+                        println!("Request submitted: {:?}", parts[1]);
+                    }
                 }
                 "status" | "st" => {
                     let state = consensus_for_cli.read();
@@ -290,36 +324,52 @@ async fn start_node(
 
     // Main message processing loop
     info!("Node started. Type 'help' for commands.");
-    while let Some((peer_id, msg)) = network_rx.recv().await {
-        match msg {
-            NetworkMessage::Consensus(consensus_msg) => {
-                let msg_type = match &consensus_msg {
-                    ConsensusMessage::Request(_) => "Request",
-                    ConsensusMessage::PrePrepare(_) => "PrePrepare",
-                    ConsensusMessage::Prepare(_) => "Prepare",
-                    ConsensusMessage::Commit(_) => "Commit",
-                    ConsensusMessage::Reply(_) => "Reply",
-                    ConsensusMessage::ViewChange(_) => "ViewChange",
-                    ConsensusMessage::NewView(_) => "NewView",
-                    ConsensusMessage::Checkpoint(_) => "Checkpoint",
-                };
-                info!("Received {} from {}...", msg_type, &peer_id[..16]);
+    loop {
+        tokio::select! {
+            // Handle CLI requests
+            Some(request) = cli_request_rx.recv() => {
+                info!("Processing CLI request: {:?}", String::from_utf8_lossy(&request.operation));
+                if let Err(e) = consensus.handle_request(request).await {
+                    warn!("Error handling request: {}", e);
+                }
+            }
 
-                if let Err(e) = consensus.process_message(consensus_msg).await {
-                    warn!("Error processing message from {}: {}", &peer_id[..16], e);
+            // Handle network messages
+            Some((peer_id, msg)) = network_rx.recv() => {
+                match msg {
+                    NetworkMessage::Consensus(consensus_msg) => {
+                        let msg_type = match &consensus_msg {
+                            ConsensusMessage::Request(_) => "Request",
+                            ConsensusMessage::PrePrepare(_) => "PrePrepare",
+                            ConsensusMessage::Prepare(_) => "Prepare",
+                            ConsensusMessage::Commit(_) => "Commit",
+                            ConsensusMessage::Reply(_) => "Reply",
+                            ConsensusMessage::ViewChange(_) => "ViewChange",
+                            ConsensusMessage::NewView(_) => "NewView",
+                            ConsensusMessage::Checkpoint(_) => "Checkpoint",
+                        };
+                        info!("Received {} from {}...", msg_type, &peer_id[..16]);
+
+                        if let Err(e) = consensus.process_message(consensus_msg).await {
+                            warn!("Error processing message from {}: {}", &peer_id[..16], e);
+                        }
+                    }
+                    NetworkMessage::Ping { timestamp, .. } => {
+                        let pong = NetworkMessage::Pong {
+                            node_id: node_id.clone(),
+                            timestamp,
+                        };
+                        if let Err(e) = network.send_to_peer(&peer_id, pong).await {
+                            warn!("Failed to send pong: {}", e);
+                        }
+                    }
+                    NetworkMessage::Pong { .. } => {}
+                    _ => {}
                 }
             }
-            NetworkMessage::Ping { timestamp, .. } => {
-                let pong = NetworkMessage::Pong {
-                    node_id: node_id.clone(),
-                    timestamp,
-                };
-                if let Err(e) = network.send_to_peer(&peer_id, pong).await {
-                    warn!("Failed to send pong: {}", e);
-                }
-            }
-            NetworkMessage::Pong { .. } => {}
-            _ => {}
+
+            // Exit if both channels are closed
+            else => break,
         }
     }
 

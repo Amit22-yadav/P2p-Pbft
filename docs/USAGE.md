@@ -412,3 +412,6 @@ If all nodes show "Offline", restart the network:
 ```bash
 ./scripts/run_blockchain.sh start
 ```
+
+
+<!-- for i in {1..10}; do ./client.sh demo; done -->
